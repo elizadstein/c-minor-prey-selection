@@ -1,0 +1,275 @@
+---
+title: "CONI Diet"
+output: html_document
+date: '2023-04-25'
+editor_options: 
+  chunk_output_type: console
+---
+
+# Initialization
+
+Load packages
+
+```{r}
+#### To install qiime2R:
+# if (!requireNamespace("devtools", quietly = TRUE)){install.packages("devtools")}
+# devtools::install_github("jbisanz/qiime2R")
+
+
+library(qiime2R)
+library(tidyverse)
+
+```
+
+Custom Functions
+```{r}
+# length of which
+length.which <- function(x) {
+  length(which(x))
+}
+
+# standard error
+sterr <- function(x) sd(x)/sqrt(length(x))
+```
+# Prepare Data
+
+Convert .qza objects to data.frames
+```{r}
+
+# feature table
+feature_qza <- read_qza("../data/table-176-dada2.qza")
+sequences <- as.data.frame(feature_qza[["data"]]) %>%
+  rownames_to_column("Feature.ID")  %>%
+  rename_with(~ gsub("-", ".", .)) # replace "-" in column names with "."
+write.csv(sequences, "../output/seq_table.csv")
+
+# taxonomy
+ncbi_taxonomy_qza <- read_qza("../data/ncbi-taxonomy.qza")
+ncbi_taxonomy <- ncbi_taxonomy_qza[["data"]] %>%
+  mutate(source = "ncbi")
+
+bold_taxonomy_qza <- read_qza("../data/bold-taxonomy.qza")
+bold_taxonomy <- bold_taxonomy_qza[["data"]] %>%
+  mutate(source = "bold")
+
+cust_taxonomy_qza <- read_qza("../data/cust-taxonomy.qza")
+cust_taxonomy <- cust_taxonomy_qza[["data"]] %>%
+  mutate(source = "cust")
+
+
+```
+
+
+Clean up data: Delete ASVs with <90% confidence, 
+```{r}
+
+# rbind taxonomy data frames 
+long_dat <- rbind(bold_taxonomy, ncbi_taxonomy, cust_taxonomy)
+
+
+# filter out matches < 90% and separate taxon columns 
+filtered_dat <- long_dat %>%
+  filter(Confidence >= 0.9) %>% # delete rows with confidence < 0.9
+  separate(col = Taxon,           # separate taxon into multiple columns
+           into = c("kingdom", "phylum", "class", "order", 
+                    "family", "genus", "species"),
+           sep = ";") %>%
+  filter(phylum == "p__Arthropoda" | phylum == " p__Arthropoda") %>% 
+  # keep only Arthropoda (some have space before p)
+  arrange(Feature.ID) # arrange df by Feature.ID
+# Warning message ok
+
+# merge data taxon columns with sequence data
+merged_dat <- full_join(x = filtered_dat, y = sequences, by = "Feature.ID")
+
+# create df with negatives and blanks only
+neg_dat <- merged_dat %>%
+  select("Feature.ID", "kingdom", "phylum", "class", "order", "family", 
+         "genus", "species", "Confidence", "source",
+         "CONI.BLANK.1", "CONI.BLANK.2", "CONI.neg.1", "CONI.neg.10", 
+         "CONI.neg.11", "CONI.neg.12", "CONI.neg.13", "CONI.neg.14", 
+         "CONI.neg.2", "CONI.neg.3", "CONI.neg.4", "CONI.neg.6", "CONI.neg.7", 
+         "CONI.neg.8", "CONI.neg.9") %>% # select negatives and blanks
+  filter((CONI.BLANK.1 | CONI.BLANK.2 | CONI.neg.1 | CONI.neg.10 | 
+                  CONI.neg.11 | CONI.neg.12 | CONI.neg.13 | CONI.neg.14 |
+                  CONI.neg.2 | CONI.neg.3 | CONI.neg.4 | CONI.neg.6 | 
+                  CONI.neg.7 | CONI.neg.8 | CONI.neg.9) != 0) 
+                  # get rid of rows with all 0s
+  
+# create df with samples only
+nonneg_dat <- merged_dat %>%
+  select(-c("CONI.BLANK.1", "CONI.BLANK.2", "CONI.neg.1", "CONI.neg.10", 
+         "CONI.neg.11", "CONI.neg.12", "CONI.neg.13", "CONI.neg.14", 
+         "CONI.neg.2", "CONI.neg.3", "CONI.neg.4", "CONI.neg.6", "CONI.neg.7", 
+         "CONI.neg.8", "CONI.neg.9"))  
+
+# remove features from sample df that appear in negative/blank df
+uncontaminated_dat <- nonneg_dat[
+  !(nonneg_dat$Feature.ID %in% neg_dat$Feature.ID),]
+# removed 73 ASVs
+
+# remove features that didn't have a match to Order
+assigned_dat <- uncontaminated_dat %>%
+  drop_na(order) %>% # remove rows that have NA in order column
+   filter(!if_all(starts_with("CONI"), is.na)) # get rid of rows with all NAs
+
+
+```
+
+# Finalize classifications
+
+
+Several RSM samples matched Mantidae (o=Mantodea) to a high degree in the custom reference library, but they matched different orders in BOLD/NCBI (mostly Lepidoptera). I examined the first 25 of these ASVs and the BOLD/NCBI record appears to be accurate (the record is from Argentina or nearby), so I will have BOLD/NCBI results always outweigh Mantispidae from my custom library.	This also occurred with Calymmus.						
+
+```{r}
+
+# remove f__Mantispidae and  g__Calymmus (TenebrionidaeA)
+dat_no_calmant <- assigned_dat %>%
+  filter(genus != " g__Calymmus") %>% # remove g__Calymmus
+  filter(family != " f__Mantispidae") # remove f__Mantispidae
+
+```
+
+
+In the cases where an ASV matched different taxa depending on the library, I went with the hit with the highest confidence.
+
+```{r}
+# Which features matched to just one reference library?
+unique_dat <- dat_no_calmant %>%
+  group_by(Feature.ID) %>%
+  filter(n()==1) %>% # extract Feature.IDs that appear only once
+  ungroup()
+
+# Which features matched to multiple reference libraries?
+duplicate_dat <- dat_no_calmant %>%
+  group_by(Feature.ID) %>% 
+  filter(n()>1) %>% # extract Feature.IDs that appear more than once
+  ungroup()
+
+
+# Manually remove exceptions to my highest confidence rule. 
+# These exceptions were made based on geography data available in BOLD or high 
+# accuracy for low taxonomic resolution.
+# Then identify the hit with the highest confidence
+duplicate_highest_conf <- duplicate_dat %>%
+  filter(!(Feature.ID == "1aaff0383c2e616727f1d81bd7035a91" & source != "bold"),
+         !(Feature.ID == "1d31a018bdea736adfa6dea80789eae7" & source != "ncbi"),
+         !(Feature.ID == "608b0db3aa937e07cc16c559963b2ad1" & source != "bold"),
+         !(Feature.ID == "688f6ee25d6cb45649d599a1f10e82ea" & source != "ncbi"),
+         !(Feature.ID == "95d632e9afe8b913e8a6ded8eed550de" & source != "ncbi"),
+         !(Feature.ID == "a263902ac5b853857b3abd5e25cbda4c" & source != "bold"),
+         !(Feature.ID == "f11449ba897f6ab155bdf1a576ed2ca7" & source != "ncbi"),
+         !(Feature.ID == "f8a14bf2ba4dd8099fb47e20fa8093cc" & source != "ncbi"),
+         !(Feature.ID == "3d78b851e8bf227e8ef25d99f9dc2709" & source != "ncbi")
+           ) %>%
+  group_by(Feature.ID) %>%
+  slice_max(Confidence)
+
+# combine with unique Feature.ID df
+unique_asv <- rbind(unique_dat, duplicate_highest_conf)
+# confirm they're all unique
+nrow(unique_asv) == length(unique(unique_asv$Feature.ID)) 
+
+# remove the taxonomic classification codes in front of taxonomy
+unique_asv$kingdom <- gsub(" ","",as.character(unique_asv$kingdom))
+unique_asv$kingdom <- gsub("tax=Animalia","Metazoa",as.character(unique_asv$kingdom))
+unique_asv$kingdom <- gsub("Animalia","Metazoa",as.character(unique_asv$kingdom))
+
+unique_asv$phylum <- gsub("p__","",as.character(unique_asv$phylum))
+unique_asv$phylum <- gsub(" ","",as.character(unique_asv$phylum))
+
+unique_asv$class <- gsub("c__","",as.character(unique_asv$class))
+unique_asv$class <- gsub(" ","",as.character(unique_asv$class))
+
+unique_asv$order <- gsub("o__","",as.character(unique_asv$order))
+unique_asv$order <- gsub(" ","",as.character(unique_asv$order))
+
+unique_asv$family <- gsub("f__","",as.character(unique_asv$family))
+unique_asv$family <- gsub(" ","",as.character(unique_asv$family))
+
+unique_asv$genus <- gsub("g__","",as.character(unique_asv$genus))
+unique_asv$genus <- gsub(" ","",as.character(unique_asv$genus))
+
+unique_asv$species <- gsub("s__","",as.character(unique_asv$species))
+
+```
+
+Now classify species based on Zeale, Evens et al. 2020 and Jusino 2019.
+I chose an approach that is more conservative than Jusino but less conservative than Evens (e.g., Jusino says >97% can be species, whereas Evens says >99 can be species, >98% genus, and anything <90% thrown away. )
+
+```{r}
+
+# Assign taxonomic identity based on threshold
+asv_filtered <- unique_asv %>% 
+  mutate(identity = ifelse(Confidence >= 0.99, species,
+                    ifelse(Confidence < 0.99 & Confidence >= 0.97, genus,
+                    ifelse(Confidence < 0.97 & Confidence >= 0.95, family,
+                    order)))) %>%
+  mutate(lowest_taxon = ifelse(identity == "" | is.na(identity),
+                        ifelse(species != "" & species != " ", species,
+                          ifelse(genus != "" & genus != " ", genus,
+                            ifelse(family != "" & family != " ", family,
+                              order))),
+                        identity)) %>%
+  select(lowest_taxon, everything(), -identity) 
+
+
+```
+
+
+## Inspect non-flying taxa
+
+```{r}
+
+arachnida <- asv_filtered %>%
+  filter(class == "Arachnida") %>%
+  select(1:11, starts_with("CONI.2")) %>%
+  select(-where(~ all(is.na(.))))
+unique(arachnida$order)
+
+# We have order=Trombidiformes and Sarcoptiformes (mites), order=Ixodida (ticks), two unclassified arachnids, and four order=Araneae
+
+```
+
+## Further filter ASVs to get a final, clean data frame
+```{r}
+# Filter out non-insect taxa, add taxonomic level identifiers.
+# Make blank cells with taxonomic IDs lower than lowest_taxon column
+asv_unedited <- asv_filtered %>%
+  mutate(lowest_taxon_grade = 
+    ifelse(lowest_taxon == species, "species", 
+           ifelse(lowest_taxon == genus, "genus",
+                  ifelse(lowest_taxon == family, "family",
+                         "order")))) %>%
+  filter(class == "Insecta") %>%
+  mutate(species2 = ifelse((lowest_taxon_grade == "genus" |
+                              lowest_taxon_grade == "family" |
+                              lowest_taxon_grade == "order") &
+                             species != "", 
+                           "", species)) %>%
+  mutate(genus2 = ifelse((lowest_taxon_grade == "family" | 
+                            lowest_taxon_grade == "order") & 
+                           (genus != "" | species != ""), 
+                         "", genus)) %>%
+  mutate(family2 = ifelse(lowest_taxon_grade == "order" & 
+                            (family != "" | genus != "" | species != ""),
+                          "", family)) %>%
+  select(Feature.ID, kingdom, phylum, class, order, family2, genus2, species2,
+         lowest_taxon, lowest_taxon_grade, starts_with("CONI")) %>%
+  dplyr::rename(species = species2, genus = genus2, family = family2) %>%
+  select(where(~ !is.numeric(.) || sum(.) > 0)) # Remove columns with no reads
+
+# write to .csv
+write.csv(asv_unedited, "../output/asv_unedited.csv")
+
+```
+
+I then went through the "asv_unedited.csv" file and manually fixed errors (mispelled taxonomies, etc). The final, clean and edited version is called "asv_edited.csv".
+
+```{r}
+
+asv_final <- read.csv("../output/asv_edited.csv")
+
+```
+
+

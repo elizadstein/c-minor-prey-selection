@@ -1,0 +1,137 @@
+# Remove primes
+qiime cutadapt trim-paired \
+--i-demultiplexed-sequences ../demultiplexed-sequences.qza \
+--p-cores 16 \
+--p-front-f ^GGTCAACAAATCATAAAGATATTGG \
+--p-front-r ^GGWACTAATCAATTTCCAAATCC \
+--o-trimmed-sequences ../demux-paired-end-trimmed.qza
+
+# Denoising and quality control 
+qiime dada2 denoise-paired \
+--i-demultiplexed-seqs demux-paired-end-trimmed.qza \
+--p-trunc-len-f 175 \
+--p-trunc-len-r 176 \
+--p-n-threads 16 \
+--o-representative-sequences rep-seqs-dada2.qza \
+--o-table table-176-dada2.qza 
+
+# Create BOLD classifier
+## Download bold_rawSeqs.qza and  bold_rawTaxa.qza from O’Rourke (available here: https://forum.qiime2.org/t/building-a-coi-database-from-bold-references/16129) 
+## Submit the following in a batch file: took ~8 hours
+qiime feature-classifier fit-classifier-naive-bayes \
+--i-reference-reads bold_anml_seqs.qza \
+--i-reference-taxonomy bold_anml_taxa.qza \
+--o-classifier bold_classifier.qza
+
+## Run BOLD classifier
+qiime feature-classifier classify-sklearn \
+--i-classifier bold_classifier.qza \
+--i-reads rep-seqs-dada2.qza \
+--o-classification bold-taxonomy.qza
+
+# Create NCBI classifier
+## Download NCBI data for COI
+qiime rescript get-ncbi-data \
+--p-query 'txid6656[ORGN] AND (cytochrome c oxidase subunit 1[Title] OR cytochrome c oxidase subunit I[Title] OR cytochrome oxidase subunit 1[Title] OR cytochrome oxidase subunit I[Title] OR COX1[Title] OR CO1[Title] OR COI[Title]) NOT uncultured[TITLE] NOT unidentified[TITLE] NOT unclassified[TITLE]' \
+--p-n-jobs 5 \
+--output-dir NCBIdata_ArthOnly_classified
+
+## Cull sequences
+qiime rescript cull-seqs \
+--i-sequences ./NCBIdata_ArthOnly/NCBIdata_ArthOnly_seq.qza \
+--p-num-degenerates 5 \
+--p-homopolymer-length 12 \
+--o-clean-sequences NCBIdata_ArthOnly_ambi_hpoly_filtd_seqs.qza
+
+## Filter sequences by length
+qiime rescript filter-seqs-length \
+--i-sequences NCBIdata_ArthOnly_ambi_hpoly_filtd_seqs.qza \
+--p-global-min 250 \
+--p-global-max 1600 \
+--o-filtered-seqs NCBIdata_ArthOnly_ambi_hpoly_length_filtd_seqs.qza \
+--o-discarded-seqs NCBIdata_ArthOnly_ambi_hpoly_length_discarded_seqs.qza
+
+## Filtering for redundancy and possible ambiguity (dereplicating):
+qiime rescript dereplicate --verbose \
+  --i-sequences NCBIdata_ArthOnly_ambi_hpoly_length_filtd_seqs.qza \
+  --i-taxa ./NCBIdata_ArthOnly/NCBIdata_ArthOnly_taxa.qza \
+  --p-mode 'super' \
+  --p-derep-prefix \
+  --p-rank-handles 'silva' \
+  --o-dereplicated-sequences NCBIdata_ArthOnly_derep1_seqs.qza \
+  --o-dereplicated-taxa NCBIdata_ArthOnly_derep1_taxa.qza
+
+## Export the sequence and taxonomy files
+qiime tools export --input-path NCBIdata_ArthOnly_derep1_seqs.qza --output-path derep1seqs_NCBIdata_ArthOnly
+qiime tools export --input-path NCBIdata_ArthOnly_derep1_taxa.qza --output-path derep1taxa_NCBIdata_ArthOnly
+
+## Create a subset of sequences for generating a reference alignment:
+### Filter available seqs by length using seqkit
+seqkit seq --min-len 660 --remove-gaps --max-len 1000 -w 0 ./derep1seqs_NCBIdata_ArthOnly/dna-sequences.fasta > NCBIdata_ArthOnly_lengthFiltd_seqs.fasta
+
+### Generate a list of only particular taxa to make initial reference alignment with fewer gaps (I’ve arbitrarily selected only those with species-named taxa from the order Lepidoptera)
+grep 'p__Arthropoda;c__Insecta;o__Lepidoptera;' ./derep1taxa_NCBIdata_ArthOnly/taxonomy.tsv | grep -v 's__$' | grep -v 's__.*sp.$' | grep -v '-' | cut -f 1 > NCBIdata_ArthOnly_species.list
+
+### Filter the sequences to include only those in the .list
+seqkit grep --pattern-file NCBIdata_ArthOnly_species.list NCBIdata_ArthOnly_lengthFiltd_seqs.fasta > NCBIdata_ArthOnly_lengthNtaxaFiltd_seqs.fasta
+
+### Keep only those with no ambiguous bases
+seqkit fx2tab -n -i -a NCBIdata_ArthOnly_lengthNtaxaFiltd_seqs.fasta | awk '{if ($2 == "ACGT") print $1}' > NCBIdata_ArthOnly_nonAmbig_featureIDs.txt
+seqkit grep --pattern-file NCBIdata_ArthOnly_nonAmbig_featureIDs.txt NCBIdata_ArthOnly_lengthNtaxaFiltd_seqs.fasta -w 0 > NCBIdata_ArthOnly_lengthNtaxaNambigFiltd_seqs.fasta
+
+### Subsample to 2,000 sequences to build reference alignment
+seqkit sample --rand-seed 101 --number 2000 --two-pass NCBIdata_ArthOnly_lengthNtaxaNambigFiltd_seqs.fasta -w 0 > NCBIdata_ArthOnly_mafftRefs_subseqs_seqs.fasta
+
+### Create a reference alignment
+mafft --auto --thread -1 NCBIdata_ArthOnly_mafftRefs_subseqs_seqs.fasta > NCBIdata_ArthOnly_reference_MSA
+
+### Align the primers to the small alignment and identify the coordinate positions
+mafft --multipair --addfragments anml_primers.txt --keeplength --thread -1 --mapout --reorder NCBIdata_ArthOnly_reference_MSA > NCBIdata_ArthOnly_primer_MSA
+
+### Align the remaining sequences to the reference alignment file
+
+### Create a list of the sequences to drop:
+grep '^>' NCBIdata_ArthOnly_mafftRefs_subseqs_seqs.fasta | sed 's/^>//' > NCBIdata_ArthOnly_droplist.txt
+
+### Filter OUT the sequences to include only those NOT in the droplist.txt file
+seqkit grep -v --pattern-file NCBIdata_ArthOnly_droplist.txt ./derep1seqs_NCBIdata_ArthOnly/dna-sequences.fasta > NCBIdata_ArthOnly_seqsForFullAlignment.fasta
+
+### Generate full sequence alignment
+mafft --auto --addfull NCBIdata_ArthOnly_seqsForFullAlignment.fasta --keeplength --thread -1 NCBIdata_ArthOnly_primer_MSA > NCBIdata_ArthOnly_full_MSA
+
+## Use python to create a fasta file with only the primer-coordinate positions remaining in the alignment
+python extract_alignment_region.py \
+  -i NCBIdata_ArthOnly_full_MSA \
+  -o NCBIdata_ArthOnly_coordinateTrimmed_MSA.fasta \
+  -s 510 \
+  -e 899
+
+## Make a list of sequence headers to drop:
+grep PRIMER NCBIdata_ArthOnly_coordinateTrimmed_MSA.fasta | sed 's/>//' | sed 's/[ \t]*$//'
+
+## Exclude these sequences from the alignment file
+seqkit grep -v -f dropPrimers.txt NCBIdata_ArthOnly_coordinateTrimmed_MSA.fasta | \
+seqkit seq --upper-case -w 0 -g --max-len 207 --min-len 170 > NCBIdata_ArthOnly_derep1_anml.fasta
+
+## Import the primer-coordinate-trimmed reference sequences back as a QIIME object:
+qiime tools import --input-path NCBIdata_ArthOnly_derep1_anml.fasta --output-path NCBIdata_ArthOnly_derep1_anml_seqs.qza --type 'FeatureData[Sequence]'
+
+## Dereplicate these sequences a second time:
+qiime rescript dereplicate \
+--i-sequences NCBIdata_ArthOnly_derep1_anml_seqs.qza \
+--i-taxa NCBIdata_ArthOnly_derep1_taxa.qza \
+--p-mode 'super' --p-derep-prefix --p-rank-handles 'silva' \
+--o-dereplicated-sequences NCBIdata_ArthOnly_anml_seqs.qza \
+--o-dereplicated-taxa NCBIdata_ArthOnly_anml_taxa.qza
+
+## Build the NCBI classifier: ran for ~ 17 hours
+qiime feature-classifier fit-classifier-naive-bayes \
+--i-reference-reads NCBIdata_ArthOnly_anml_seqs.qza \
+--i-reference-taxonomy NCBIdata_ArthOnly_anml_taxa.qza \
+--o-classifier ncbi-classifier.qza
+
+## Run NCBI classifier
+qiime feature-classifier classify-sklearn \
+--i-classifier ncbi_classifier.qza \
+--i-reads rep-seqs-dada2.qza \
+--o-classification ncbi-taxonomy.qza

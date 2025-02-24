@@ -1,0 +1,1926 @@
+---
+title: "Florida Prey Selection"
+output: html_document
+date: "2023-06-15"
+editor_options: 
+  chunk_output_type: console
+---
+
+# Initialization
+
+Load packages
+
+```{r}
+
+library(tidyverse)
+library(econullnetr)
+library(vegan)
+library(lubridate)
+library(grid)
+library(iNEXT.beta3D)
+library(gridExtra)
+
+
+# Function for standard error
+stderr <- function(x) sd(x)/sqrt(length(x))
+
+# Function for SES
+ses <- function(obs, exp) (obs - mean(exp)) / sd(exp) 
+```
+
+# Prey Selection
+
+For final groupings, Dyscinetus dubius and Tropisternus sp.were removed from Argentina insect samples because of their high abundance in the environment and large size makes them unpalateable to nighthawks. Coleoptera were split into small (< 5 mm) and large (> 5 mm).
+
+## Prepare Insect Data
+
+Florida UV Insects
+```{r}
+
+
+#### For size-adjusted data ####
+
+# load insect data
+insect_dat_fl <- read.csv("../data/insect_data_fl_final.csv")
+insect_dat_fl$date <- as.Date(insect_dat_fl$date, format = "%Y-%m-%d")
+
+#### Average Malaise and UV data ####
+
+# Calculate Relative biomass of each order
+insect_fl_u <- insect_dat_fl %>%
+  mutate(year = year(date)) %>%
+  filter(trap_type == "u") %>% # select only UV traps
+  group_by(order) %>%
+  dplyr::summarise(total.u = sum(length)) %>% # sum all lengths
+  ungroup () %>%
+  dplyr::mutate(relative.abund.u = total.u/sum(total.u)) # calculate relative abundance
+
+# Calculate Relative Abundance of each order
+insect_fl_m <- insect_dat_fl %>%
+  mutate(year = year(date)) %>%
+  filter(trap_type == "m") %>% # select only malaise traps
+  group_by(order) %>%
+  group_by(order) %>%
+  dplyr::summarise(total.m = sum(length)) %>% # sum all lengths
+  ungroup () %>%
+  dplyr::mutate(relative.abund.m = total.m/sum(total.m)) # calculate abundance
+
+
+# Widen dataset
+insect_wide_fl_u <- insect_fl_u %>%
+  select(order, relative.abund.u) %>%
+  spread(key = order, value = relative.abund.u) 
+
+insect_wide_fl_m <- insect_fl_m %>%
+  select(order, relative.abund.m) %>%
+  spread(key = order, value = relative.abund.m)
+
+```
+
+Argentina Insects
+```{r}
+
+# load insect data
+insect_dat_arg <- read.csv("../data/insect_data_arg_final.csv")
+insect_dat_arg$date <- as.Date(insect_dat_arg$date, format = "%Y-%m-%d")
+
+#### Average Malaise and UV data ####
+
+# Calculate Relative Abundance of each order
+insect_arg_u <- insect_dat_arg %>%
+  mutate(trap_type = ifelse(trap_type == "U", "u", "m")) %>%
+  filter(trap_type == "u") %>% # only UV samples
+  group_by(order) %>% # group by order
+  na.omit() %>%
+  dplyr::summarise(total.u = sum(length)) %>% # sum all orders
+  ungroup () %>%
+  mutate(relative.abund.u = total.u/sum(total.u)) # calculate relative abundance
+
+insect_arg_m <- insect_dat_arg %>%
+  mutate(trap_type = ifelse(trap_type == "U", "u", "m")) %>%
+  filter(trap_type == "m") %>% # only UV samples
+  group_by(order) %>% # group by order
+  na.omit() %>%
+  dplyr::summarise(total.m = sum(length)) %>% # sum all orders
+  ungroup () %>%
+  mutate(relative.abund.m = total.m/sum(total.m)) # calculate relative abundance
+
+
+# Widen dataset
+insect_wide_arg_u <- insect_arg_u %>%
+  select(order, relative.abund.u) %>%
+  spread(key = order, value = relative.abund.u) 
+
+insect_wide_arg_m <- insect_arg_m %>%
+  select(order, relative.abund.m) %>%
+  spread(key = order, value = relative.abund.m) 
+
+```
+
+
+## Prepare Diet
+```{r}
+# load diet data
+diet_dat <- read.csv("../output/asv_edited.csv")
+
+# combine like orders
+diet_orders <- diet_dat %>%
+  select(-c("CONI.RSM1145.2", "CONI.RSM1151.1", "CONI.RSM1152.1",
+            "CONI.RSM140.3", "CONI.RSM140.2", "CONI.RSM418.1",
+            "CONI.RSM420.1", "CONI.RSM420.2", "CONI.RSM460.2",
+            "CONI.RSM463.1", "CONI.RSM463.5", "CONI.20801", 
+            "CONI.RSM1152.1", "CONI.RSM140.1", "CONI.RSM140.3", 
+            "CONI.RSM166", "CONI.RSM198", "CONI.RSM311.1",
+            "CONI.RSM319.3")) %>%
+  group_by(order) %>%
+  dplyr::summarise(across(starts_with("CONI"), ~sum(., na.rm = TRUE)))
+
+# make lowercase
+diet_orders$order <- tolower(diet_orders$order)
+
+# convert to relative read abundance (within sample)
+diet_rra <- diet_orders[,-1] %>%
+  t() %>%
+  as.data.frame() %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads ) %>% # calculate proportion per sample
+  select(-total_reads)# remove rows (orders) with 0 reads
+colnames(diet_rra) <- diet_orders$order
+
+# look at minimum values in each sample
+diet_rra %>%
+  apply(FUN = function(x) {min(x[x!=0])}, MARGIN = 1) 
+# there are two instances below 1/1000: trichoptera and ocleoptera, from the same sample.
+# the other reads in that sample (RSM309) go up to 13,000, so these may be contamination.
+# I'm going to multiply by 1000 and let those round to zero
+
+
+
+# add sample.id column
+diet_clean <- cbind(sample.id = colnames(diet_orders[,-1]),
+                        diet_rra)
+
+  
+```
+
+
+
+### Summary of Diet RRA
+
+```{r}
+
+diet_families_citrus <- diet_clean %>%
+  mutate(source = ifelse(grepl("CONI.2", sample.id), 
+                         "Citrus", "Santa Maria")) %>%
+  filter(source == "Citrus")
+
+diet_families_arg <- diet_clean %>%
+  mutate(source = ifelse(grepl("CONI.2", sample.id), 
+                         "Citrus", "Santa Maria")) %>%
+  filter(source == "Santa Maria")
+
+diet_families_summary <- data.frame(
+  RRA.Citrus = sapply(diet_families_citrus[-c(1,13)], MARGIN = 1, 
+                               FUN = mean),
+  RRA.RSM = sapply(diet_families_arg[-c(1,13)], MARGIN = 1, 
+                               FUN = mean))
+
+```
+
+
+## Combine Insect and Diet Orders
+
+```{r}
+
+### Get columns to match up for diet and insect data.frames ###
+
+# create df with a column for every order
+insect_orders_fl_m <- names(insect_wide_fl_m)
+insect_orders_fl_u <- names(insect_wide_fl_u)
+insect_orders_arg_m <- names(insect_wide_arg_m)
+insect_orders_arg_u <- names(insect_wide_arg_u)
+
+# remove sample.id column
+diet_orders <- names(diet_clean[,2:ncol(diet_clean)]) 
+
+# vector with all orders found in diet
+all_orders <- sort(unique(c(insect_orders_fl_m, insect_orders_fl_u,
+                            insect_orders_arg_m, insect_orders_arg_u,
+                            diet_orders))) # vector with all orders
+
+# create empty df with all orders
+new <- as.data.frame(matrix(data = 0, 
+              ncol = length(all_orders),
+              nrow = 1))
+colnames(new) <- all_orders
+
+# add missing orders to insect dfs
+insects_all_fl_u <- bind_rows(new, insect_wide_fl_u) %>%
+  dplyr::summarise(across(everything(), sum, na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(-c(psocodea, mantodea)) # never appears in diet
+
+insects_all_fl_m <- bind_rows(new, insect_wide_fl_m) %>%
+  dplyr::summarise(across(everything(), sum, na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(-c(psocodea, mantodea)) # never appears in diet
+
+insects_all_arg_u <- bind_rows(new, insect_wide_arg_u) %>%
+  dplyr::summarise(across(everything(), sum, na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(-c(psocodea, mantodea)) # never appears in diet
+
+insects_all_arg_m <- bind_rows(new, insect_wide_arg_m) %>%
+  dplyr::summarise(across(everything(), sum, na.rm = TRUE)) %>%
+  ungroup() %>%
+  select(-c(psocodea, mantodea)) # never appears in diet
+
+# add column for econullnetr linkage code
+insects_citrus_u <- cbind(code = rep("Citrus", nrow(insects_all_fl_u)),
+                     insects_all_fl_u)
+insects_citrus_m <- cbind(code = rep("Citrus", nrow(insects_all_fl_m)),
+                     insects_all_fl_m) 
+insects_arg_u <- cbind(code = rep("Santa Maria", nrow(insects_all_arg_u)),
+                     insects_all_arg_u)
+insects_arg_m <- cbind(code = rep("Santa Maria", nrow(insects_all_arg_m)),
+                     insects_all_arg_m) 
+
+# add missing orders to diet dfs
+diet_all <- diet_clean %>%
+  dplyr::bind_rows(new) %>%
+  dplyr::filter(!is.na(sample.id)) %>% # remove the empty row from "new" 
+  replace(is.na(.), 0) # replace NAs with 0
+
+sorted_colnames_diet <- sort(names(diet_all))
+diet_all <- diet_all[, sorted_colnames_diet] 
+diet_all <- select(diet_all, -sample.id)
+diet_final <- cbind(sample.id = diet_clean$sample.id, 
+                    code = c(rep("Citrus", 28), 
+                             rep("Santa Maria", 35)),
+                    source = c(rep("Citrus", 28), 
+                               rep("Santa Maria", 35)),
+                    diet_all)
+
+diet_final <- diet_final %>%
+  select(sample.id, code, source, blattodea, coleoptera,
+         diptera, ephemeroptera, hemiptera,
+         hymenoptera, lepidoptera, neuroptera, odonata, orthoptera,
+         trichoptera) %>%   # reorder alphabetically
+  rename_all(~ str_to_title(.))  # convert to title case
+```
+
+Prepare data for models
+```{r}
+
+# combine insect datasets
+insects_final_uv <- rbind(insects_citrus_u, insects_arg_u)
+insects_final_uv <- insects_final_uv %>%
+  select(code, blattodea, coleoptera, diptera, ephemeroptera, hemiptera,
+         hymenoptera, lepidoptera, neuroptera, odonata, orthoptera,
+         trichoptera)  %>% # reorder alphabetically
+  rename_all(~ str_to_title(.)) 
+
+insects_final_malaise <- rbind(insects_citrus_m, insects_arg_m)
+insects_final_malaise <- insects_final_malaise %>%
+  select(code, blattodea, coleoptera, diptera, ephemeroptera, hemiptera,
+         hymenoptera, lepidoptera, neuroptera, odonata, orthoptera,
+         trichoptera)  %>% # reorder alphabetically
+  rename_all(~ str_to_title(.)) 
+
+
+# subset datasets
+resources_u_fl <- insects_final_uv[1,2:12]
+resources_u_arg <- insects_final_uv[2,2:12]
+resources_m_fl <- insects_final_malaise[1,2:12]
+resources_m_arg <- insects_final_malaise[2,2:12]
+
+consumers_fl <- diet_final[diet_final$Source == "Citrus",3:14]
+consumers_arg <- diet_final[diet_final$Source == "Santa Maria",3:14]
+
+```
+
+## Model Prey Selection
+
+Can skip this if it's already run once and you saved the output as .rda files.
+```{r eval=FALSE, include=FALSE}
+
+coni.null.m.fl <- generate_null_net(consumers = consumers_fl, 
+                              resources = resources_m_fl, sims = 500,
+                              data.type = "quantities", summary.type = "sum",
+                              r.samples = "Citrus",
+                              c.samples = consumers_fl$Source
+                              )
+
+coni.null.u.fl <- generate_null_net(consumers = consumers_fl, 
+                              resources = resources_u_fl, sims = 500,
+                              data.type = "quantities", summary.type = "sum",
+                              r.samples = "Citrus",
+                              c.samples = consumers_fl$Source
+                              )
+
+coni.null.m.arg <- generate_null_net(consumers = consumers_arg, 
+                              resources = resources_m_arg, sims = 500,
+                              data.type = "quantities", summary.type = "sum",
+                              r.samples = "Santa Maria",
+                              c.samples = consumers_arg$Source
+                              )
+
+coni.null.u.arg <- generate_null_net(consumers = consumers_arg, 
+                              resources = resources_u_arg, sims = 500,
+                              data.type = "quantities", summary.type = "sum",
+                              r.samples = "Santa Maria",
+                              c.samples = consumers_arg$Source
+                              )
+
+#saveRDS(coni.null.m.fl, "Models/coni_null_m_fl.rda")
+#saveRDS(coni.null.u.fl, "Models/coni_null_u_fl.rda")
+#saveRDS(coni.null.m.arg, "Models/coni_null_m_arg.rda")
+#saveRDS(coni.null.u.arg, "Models/coni_null_u_arg.rda")
+```
+
+## Load Model Data
+
+```{r}
+
+coni.null.m.fl <- read_rds("../models/coni_null_m_fl.rda")
+coni.null.u.fl <- read_rds("../models/coni_null_u_fl.rda")
+coni.null.m.arg <- read_rds("../models/coni_null_m_arg.rda")
+coni.null.u.arg <- read_rds("../models/coni_null_u_arg.rda")
+
+```
+
+
+
+## Plot
+
+```{r}
+
+# remove very rare orders and convert to useable object for plotting
+null.uv.fl.dat <- coni.null.u.fl %>%
+  generate_edgelist()  %>%
+  filter(Resource != "Odonata" & Resource != "Neuroptera" &
+         Resource != "Blattodea" & Resource != "Ephemeroptera") 
+null.malaise.fl.dat <- coni.null.m.fl %>%
+  generate_edgelist()  %>%
+  filter(Resource != "Odonata" & Resource != "Neuroptera" &
+         Resource != "Blattodea" & Resource != "Ephemeroptera")
+null.uv.arg.dat <- coni.null.u.arg %>%
+  generate_edgelist()  %>%
+  filter(Resource != "Odonata" & Resource != "Neuroptera" &
+         Resource != "Blattodea" & Resource != "Ephemeroptera") %>%
+  mutate(Consumer = ifelse(Consumer == "Santa Maria", "Santa María", "Citrus"))
+null.malaise.arg.dat <- coni.null.m.arg %>%
+  generate_edgelist()  %>%
+  filter(Resource != "Odonata" & Resource != "Neuroptera" &
+         Resource != "Blattodea" & Resource != "Ephemeroptera") %>%
+  mutate(Consumer = ifelse(Consumer == "Santa Maria", "Santa María", "Citrus"))
+
+# make fake dataset for legend
+legend.df <- data.frame(
+  site = c("Citrus", "Santa María"),
+  x = c(0,0),
+  y = c(0,0)
+)
+
+plot.malaise <-  ggplotGrob(
+    ggplot() +
+    geom_vline(xintercept = c(-2, 2), linetype = "dashed") + 
+    geom_point(data = null.malaise.fl.dat,
+               aes(x = SES, y = Resource, fill = Test),
+               size = 4, alpha = 0.8, shape = 21) +
+    geom_point(data = null.malaise.arg.dat,
+               aes(x = SES, y = Resource, fill = Test),
+               size = 4, alpha = 0.8, shape = 24) +
+    scale_fill_manual(values = c("#F7F7F7", "#EF8A62", "#67A9CF")) +
+    scale_x_continuous(breaks = seq(from = -16, to = 24, by = 4), 
+                       minor_breaks = seq(from = -16, to = 24, by = 2),
+                      limits = c(-16,24)) +
+    labs(title = "Malaise Trap", y = NULL, x = "Std. Effect Size") +
+    guides(shape = guide_legend("Site"), fill = "none") +
+    theme_classic() +
+    theme(axis.text = element_text(size = 12, color = "black"),
+          axis.title = element_text(size = 12),
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          panel.grid.major.y = element_line(color = "grey",
+                                            linewidth = 0.4,
+                                            linetype = 3),
+          panel.grid.minor.x = element_line(color = "grey",
+                                            linewidth = 0.4,
+                                            linetype = 3),
+          panel.grid.major.x = element_line(color = "grey",
+                                            linewidth = 0.4,
+                                            linetype = 3),
+          panel.background = element_blank(),
+          panel.border = element_rect(colour = "black", fill=NA),
+          legend.position = "none"
+          ))
+
+
+plot.uv <-  ggplotGrob(
+    ggplot() +
+  #  geom_point(data = legend.df, mapping = aes(x = x, y = y, shape = site)) +
+    geom_vline(xintercept = c(-2, 2), linetype = "dashed") + 
+    geom_point(data = null.uv.fl.dat,
+               aes(x = SES, y = Resource, fill = Test, shape = "Citrus"),
+               size = 4, alpha = 0.8) +
+    geom_point(data = null.uv.arg.dat,
+               aes(x = SES, y = Resource, fill = Test, shape = "Santa María"),
+               size = 4, alpha = 0.8) +
+    scale_shape_manual(values = c(21, 24)) +
+    scale_fill_manual(values = c("#F7F7F7", "#EF8A62", "#67A9CF")) +
+    scale_x_continuous(breaks = seq(from = -16, to = 24, by = 4), 
+                       minor_breaks = seq(from = -16, to = 24, by = 2),
+                      limits = c(-16,24)) +
+    labs(title = "UV Trap", y = NULL, x = "Std. Effect Size") +
+    guides(shape = guide_legend(NULL), fill = "none") +
+    theme_classic() +
+    theme(axis.text = element_text(size = 12, color = "black"),
+          axis.text.y = element_blank(),
+          axis.title = element_text(size = 12),
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          panel.grid.major.y = element_line(color = "grey",
+                                            linewidth = 0.4,
+                                            linetype = 3),
+          panel.grid.minor.x = element_line(color = "grey",
+                                            linewidth = 0.4,
+                                            linetype = 3),
+          panel.grid.major.x = element_line(color = "grey",
+                                            linewidth = 0.4,
+                                            linetype = 3),
+          panel.background = element_blank(),
+          panel.border = element_rect(colour = "black", fill=NA),
+          legend.position = c(0.82, 0.2), 
+          legend.text = element_text(size = 11),
+          legend.background = element_rect(fill = "white", color = "black",
+                                           linewidth = 0.1)
+          ))
+
+
+#### Arrange Plots ####
+
+# assign all the same width
+plot.both <- cbind(plot.malaise, plot.uv, size = "first")
+
+grid.newpage()
+grid.draw(plot.both)
+
+```
+
+Understanding this plot: white color means that the estimate falls with 95% CI of expected based on insect trap. Dashed vertical lines indicate SES < |2|. In some cases, a white point falls outside of the dashed lines, in which case the effect size is large but not statistically significant. 
+SES = (obsered - expected) / sd. Measures the number of sd's the observed index is above or below  the mean expected index. So, where 95% CI tells whether observed falls within 95% of expected, SES tells how many SD's different it is. Neuroptera and Blattodea were very rare in malaise traps and also consumed rarely (but more than expected based on miniscule amount in traps), which is why SES is large but non-significant. See Gotelli and McCabe 2002 for explanation of SES.
+
+Export figure and table
+```{r}
+
+#pdf("figures/selection_rra.pdf", height = 3, width = 10)
+
+grid.newpage()
+grid.draw(plot.both)
+
+#dev.off()
+
+
+ses.table <- data.frame(
+  Trap = c(rep("Malaise", 11),
+           rep("UV", 11)),
+  Order = names(coni.null.u.fl$obs.interactions[-1]),
+  Observed.Citrus = c(coni.null.m.fl$obs.interactions$Blattodea[1],
+                      coni.null.m.fl$obs.interactions$Coleoptera[1],
+                      coni.null.m.fl$obs.interactions$Diptera[1],
+                      coni.null.m.fl$obs.interactions$Ephemeroptera[1],
+                      coni.null.m.fl$obs.interactions$Hemiptera[1],
+                      coni.null.m.fl$obs.interactions$Hymenoptera[1],
+                      coni.null.m.fl$obs.interactions$Lepidoptera[1],
+                      coni.null.m.fl$obs.interactions$Neuroptera[1],
+                      coni.null.m.fl$obs.interactions$Odonata[1],
+                      coni.null.m.fl$obs.interactions$Orthoptera[1],
+                      coni.null.m.fl$obs.interactions$Trichoptera[1],
+                      coni.null.u.fl$obs.interactions$Blattodea[1],
+                      coni.null.u.fl$obs.interactions$Coleoptera[1],
+                      coni.null.u.fl$obs.interactions$Diptera[1],
+                      coni.null.u.fl$obs.interactions$Ephemeroptera[1],
+                      coni.null.u.fl$obs.interactions$Hemiptera[1],
+                      coni.null.u.fl$obs.interactions$Hymenoptera[1],
+                      coni.null.u.fl$obs.interactions$Lepidoptera[1],
+                      coni.null.u.fl$obs.interactions$Neuroptera[1],
+                      coni.null.u.fl$obs.interactions$Odonata[1],
+                      coni.null.u.fl$obs.interactions$Orthoptera[1],
+                      coni.null.u.fl$obs.interactions$Trichoptera[1]),
+  Observed.Santa.Maria = c(coni.null.m.arg$obs.interactions$Blattodea[1],
+                      coni.null.m.arg$obs.interactions$Coleoptera[1],
+                      coni.null.m.arg$obs.interactions$Diptera[1],
+                      coni.null.m.arg$obs.interactions$Ephemeroptera[1],
+                      coni.null.m.arg$obs.interactions$Hemiptera[1],
+                      coni.null.m.arg$obs.interactions$Hymenoptera[1],
+                      coni.null.m.arg$obs.interactions$Lepidoptera[1],
+                      coni.null.m.arg$obs.interactions$Neuroptera[1],
+                      coni.null.m.arg$obs.interactions$Odonata[1],
+                      coni.null.m.arg$obs.interactions$Orthoptera[1],
+                      coni.null.m.arg$obs.interactions$Trichoptera[1],
+                      coni.null.u.arg$obs.interactions$Blattodea[1],
+                      coni.null.u.arg$obs.interactions$Coleoptera[1],
+                      coni.null.u.arg$obs.interactions$Diptera[1],
+                      coni.null.u.arg$obs.interactions$Ephemeroptera[1],
+                      coni.null.u.arg$obs.interactions$Hemiptera[1],
+                      coni.null.u.arg$obs.interactions$Hymenoptera[1],
+                      coni.null.u.arg$obs.interactions$Lepidoptera[1],
+                      coni.null.u.arg$obs.interactions$Neuroptera[1],
+                      coni.null.u.arg$obs.interactions$Odonata[1],
+                      coni.null.u.arg$obs.interactions$Orthoptera[1],
+                      coni.null.u.arg$obs.interactions$Trichoptera[1]),
+  Expected.Citrus.UCL = c(quantile(coni.null.m.fl$rand.data$Blattodea, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Coleoptera, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Diptera, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Ephemeroptera, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Hemiptera, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Hymenoptera, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Lepidoptera, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Neuroptera, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Odonata, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Orthoptera, 0.95)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Trichoptera, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Blattodea, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Coleoptera, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Diptera, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Ephemeroptera, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Hemiptera, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Hymenoptera, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Lepidoptera, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Neuroptera, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Odonata, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Orthoptera, 0.95)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Trichoptera, 0.95)[[1]]),
+  Expected.Citrus.LCL = c(quantile(coni.null.m.fl$rand.data$Blattodea, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Coleoptera, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Diptera, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Ephemeroptera, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Hemiptera, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Hymenoptera, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Lepidoptera, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Neuroptera, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Odonata, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Orthoptera, 0.275)[[1]],
+                  quantile(coni.null.m.fl$rand.data$Trichoptera, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Blattodea, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Coleoptera, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Diptera, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Ephemeroptera, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Hemiptera, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Hymenoptera, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Lepidoptera, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Neuroptera, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Odonata, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Orthoptera, 0.275)[[1]],
+                  quantile(coni.null.u.fl$rand.data$Trichoptera, 0.275)[[1]]),
+  Expected.SantaMaria.UCL = c(quantile(coni.null.m.arg$rand.data$Blattodea, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Coleoptera, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Diptera, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Ephemeroptera, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Hemiptera, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Hymenoptera, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Lepidoptera, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Neuroptera, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Odonata, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Orthoptera, 0.95)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Trichoptera, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Blattodea, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Coleoptera, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Diptera, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Ephemeroptera, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Hemiptera, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Hymenoptera, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Lepidoptera, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Neuroptera, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Odonata, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Orthoptera, 0.95)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Trichoptera, 0.95)[[1]]),
+  Expected.SantaMaria.LCL = c(quantile(coni.null.m.arg$rand.data$Blattodea, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Coleoptera, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Diptera, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Ephemeroptera, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Hemiptera, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Hymenoptera, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Lepidoptera, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Neuroptera, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Odonata, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Orthoptera, 0.275)[[1]],
+                  quantile(coni.null.m.arg$rand.data$Trichoptera, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Blattodea, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Coleoptera, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Diptera, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Ephemeroptera, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Hemiptera, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Hymenoptera, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Lepidoptera, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Neuroptera, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Odonata, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Orthoptera, 0.275)[[1]],
+                  quantile(coni.null.u.arg$rand.data$Trichoptera, 0.275)[[1]]),
+  SES.Citrus = c(ses(obs = coni.null.m.fl$obs.interactions$Blattodea[1], 
+                     exp = coni.null.m.fl$rand.data$Blattodea),
+                 ses(obs = coni.null.m.fl$obs.interactions$Coleoptera[1], 
+                     exp = coni.null.m.fl$rand.data$Coleoptera),
+                 ses(obs = coni.null.m.fl$obs.interactions$Diptera[1], 
+                     exp = coni.null.m.fl$rand.data$Diptera),
+                 ses(obs = coni.null.m.fl$obs.interactions$Ephemeroptera[1], 
+                     exp = coni.null.m.fl$rand.data$Ephemeroptera),
+                 ses(obs = coni.null.m.fl$obs.interactions$Hemiptera[1], 
+                     exp = coni.null.m.fl$rand.data$Hemiptera),
+                 ses(obs = coni.null.m.fl$obs.interactions$Hymenoptera[1], 
+                     exp = coni.null.m.fl$rand.data$Hymenoptera),
+                 ses(obs = coni.null.m.fl$obs.interactions$Lepidoptera[1], 
+                     exp = coni.null.m.fl$rand.data$Lepidoptera),
+                 ses(obs = coni.null.m.fl$obs.interactions$Neuroptera[1], 
+                     exp = coni.null.m.fl$rand.data$Neuroptera),
+                 ses(obs = coni.null.m.fl$obs.interactions$Odonata[1], 
+                     exp = coni.null.m.fl$rand.data$Odonata),
+                 ses(obs = coni.null.m.fl$obs.interactions$Orthoptera[1], 
+                     exp = coni.null.m.fl$rand.data$Orthoptera),
+                 ses(obs = coni.null.m.fl$obs.interactions$Trichoptera[1], 
+                     exp = coni.null.m.fl$rand.data$Trichoptera),
+                 ses(obs = coni.null.u.fl$obs.interactions$Blattodea[1], 
+                     exp = coni.null.u.fl$rand.data$Blattodea),
+                 ses(obs = coni.null.u.fl$obs.interactions$Coleoptera[1], 
+                     exp = coni.null.u.fl$rand.data$Coleoptera),
+                 ses(obs = coni.null.u.fl$obs.interactions$Diptera[1], 
+                     exp = coni.null.u.fl$rand.data$Diptera),
+                 ses(obs = coni.null.u.fl$obs.interactions$Ephemeroptera[1], 
+                     exp = coni.null.u.fl$rand.data$Ephemeroptera),
+                 ses(obs = coni.null.u.fl$obs.interactions$Hemiptera[1], 
+                     exp = coni.null.u.fl$rand.data$Hemiptera),
+                 ses(obs = coni.null.u.fl$obs.interactions$Hymenoptera[1], 
+                     exp = coni.null.u.fl$rand.data$Hymenoptera),
+                 ses(obs = coni.null.u.fl$obs.interactions$Lepidoptera[1], 
+                     exp = coni.null.u.fl$rand.data$Lepidoptera),
+                 ses(obs = coni.null.u.fl$obs.interactions$Neuroptera[1], 
+                     exp = coni.null.u.fl$rand.data$Neuroptera),
+                 ses(obs = coni.null.u.fl$obs.interactions$Odonata[1], 
+                     exp = coni.null.u.fl$rand.data$Odonata),
+                 ses(obs = coni.null.u.fl$obs.interactions$Orthoptera[1], 
+                     exp = coni.null.u.fl$rand.data$Orthoptera),
+                 ses(obs = coni.null.u.fl$obs.interactions$Trichoptera[1], 
+                     exp = coni.null.u.fl$rand.data$Trichoptera)),
+  SES.Santa.Maria = c(ses(obs = coni.null.m.arg$obs.interactions$Blattodea[1], 
+                     exp = coni.null.m.arg$rand.data$Blattodea),
+                 ses(obs = coni.null.m.arg$obs.interactions$Coleoptera[1], 
+                     exp = coni.null.m.arg$rand.data$Coleoptera),
+                 ses(obs = coni.null.m.arg$obs.interactions$Diptera[1], 
+                     exp = coni.null.m.arg$rand.data$Diptera),
+                 ses(obs = coni.null.m.arg$obs.interactions$Ephemeroptera[1], 
+                     exp = coni.null.m.arg$rand.data$Ephemeroptera),
+                 ses(obs = coni.null.m.arg$obs.interactions$Hemiptera[1], 
+                     exp = coni.null.m.arg$rand.data$Hemiptera),
+                 ses(obs = coni.null.m.arg$obs.interactions$Hymenoptera[1], 
+                     exp = coni.null.m.arg$rand.data$Hymenoptera),
+                 ses(obs = coni.null.m.arg$obs.interactions$Lepidoptera[1], 
+                     exp = coni.null.m.arg$rand.data$Lepidoptera),
+                 ses(obs = coni.null.m.arg$obs.interactions$Neuroptera[1], 
+                     exp = coni.null.m.arg$rand.data$Neuroptera),
+                 ses(obs = coni.null.m.arg$obs.interactions$Odonata[1], 
+                     exp = coni.null.m.arg$rand.data$Odonata),
+                 ses(obs = coni.null.m.arg$obs.interactions$Orthoptera[1], 
+                     exp = coni.null.m.arg$rand.data$Orthoptera),
+                 ses(obs = coni.null.m.arg$obs.interactions$Trichoptera[1], 
+                     exp = coni.null.m.arg$rand.data$Trichoptera),
+                 ses(obs = coni.null.u.arg$obs.interactions$Blattodea[1], 
+                     exp = coni.null.u.arg$rand.data$Blattodea),
+                 ses(obs = coni.null.u.arg$obs.interactions$Coleoptera[1], 
+                     exp = coni.null.u.arg$rand.data$Coleoptera),
+                 ses(obs = coni.null.u.arg$obs.interactions$Diptera[1], 
+                     exp = coni.null.u.arg$rand.data$Diptera),
+                 ses(obs = coni.null.u.arg$obs.interactions$Ephemeroptera[1], 
+                     exp = coni.null.u.arg$rand.data$Ephemeroptera),
+                 ses(obs = coni.null.u.arg$obs.interactions$Hemiptera[1], 
+                     exp = coni.null.u.arg$rand.data$Hemiptera),
+                 ses(obs = coni.null.u.arg$obs.interactions$Hymenoptera[1], 
+                     exp = coni.null.u.arg$rand.data$Hymenoptera),
+                 ses(obs = coni.null.u.arg$obs.interactions$Lepidoptera[1], 
+                     exp = coni.null.u.arg$rand.data$Lepidoptera),
+                 ses(obs = coni.null.u.arg$obs.interactions$Neuroptera[1], 
+                     exp = coni.null.u.arg$rand.data$Neuroptera),
+                 ses(obs = coni.null.u.arg$obs.interactions$Odonata[1], 
+                     exp = coni.null.u.arg$rand.data$Odonata),
+                 ses(obs = coni.null.u.arg$obs.interactions$Orthoptera[1], 
+                     exp = coni.null.u.arg$rand.data$Orthoptera),
+                 ses(obs = coni.null.u.arg$obs.interactions$Trichoptera[1], 
+                     exp = coni.null.u.arg$rand.data$Trichoptera))
+)
+
+ses.table <- filter(ses.table, Order != "Blattodea" &  Order != "Ephemeroptera" &
+                       Order != "Odonata" &  Order != "Neuroptera")
+
+write.csv(ses.table, "../output/ses_table.csv")
+```
+
+
+
+# Insect Diversity
+
+## Prepare data
+
+Florida
+```{r}
+
+#### For size-adjusted data ####
+
+# load insect data
+insect_dat_fl <- read.csv("../data/insect_data_fl_final.csv")
+insect_dat_fl$date <- as.Date(insect_dat_fl$date, format = "%Y-%m-%d")
+
+
+# Calculate Relative biomass of each order
+insect_fl_u <- insect_dat_fl %>%
+  mutate(year = year(date)) %>%
+  filter(trap_type == "u") %>% # select only UV traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order, year) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%
+  ungroup()
+
+# Calculate Relative Abundance of each order
+insect_fl_m <- insect_dat_fl %>%
+  mutate(year = year(date)) %>%
+  filter(trap_type == "m") %>% # select only malaise traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order, year) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%
+  ungroup()
+
+
+```
+
+Argentina
+```{r}
+
+# load insect data
+insect_dat_arg <- read.csv("../data/insect_data_arg_final.csv")
+insect_dat_arg$date <- as.Date(insect_dat_arg$date, format = "%Y-%m-%d")
+
+#### Average Malaise and UV data ####
+
+# Calculate Relative Abundance of each order
+insect_arg_u <- insect_dat_arg %>%
+  mutate(trap_type = ifelse(trap_type == "U", "u", "m")) %>%
+  na.omit() %>%
+  filter(trap_type == "u") %>% # only UV samples
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order, year) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique() %>%
+  ungroup()
+
+insect_arg_m <- insect_dat_arg %>%
+  mutate(trap_type = ifelse(trap_type == "U", "u", "m")) %>%
+  na.omit() %>%
+  filter(trap_type == "m") %>% # only UV samples
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order, year) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%
+  ungroup()
+
+```
+
+```{r}
+
+#### Prepare Data Frames ####
+
+# Citrus Malaise
+malaise.fl <- insect_fl_m %>%
+  mutate(order.biomass = round(order.biomass, digits = 0)) %>%
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) # replace NA with 0
+
+malaise.fl.orders <- malaise.fl$order # create vector for row names
+  
+malaise.fl <- malaise.fl %>%
+  select(-1) # remove order column
+
+fl.1 <- as.matrix(apply(malaise.fl,2,as.numeric)) # convert to numeric
+
+row.names(fl.1) <- malaise.fl.orders # b) use your species names as row names
+
+# Citrus UV
+uv.fl <- insect_fl_u %>%
+  mutate(order = recode(order, "blattoadea" = "blattodea")) %>%
+  mutate(order.biomass = round(order.biomass, digits = 0)) %>%
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) %>% # replace NA with 0
+  filter(order != "1+83:111", order != "embioptera",
+         order!= "mantodea", order != "psocodea", 
+         order != "dermaptera") # remove random order name
+  
+
+uv.fl.orders <- uv.fl$order # create vector for row names
+  
+uv.fl <- uv.fl %>%
+  select(-1) # remove order column
+
+fl.2 <- as.matrix(apply(uv.fl,2,as.numeric)) # convert to numeric
+
+row.names(fl.2) <- uv.fl.orders # b) use your species names as row names
+
+# Combine into one list 
+div.fl <- list(Malaise = fl.1, UV = fl.2)
+
+# Argentina Malaise
+malaise.arg <- insect_arg_m %>%
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) # replace NA with 0
+
+malaise.arg.orders <- malaise.arg$order # create vector for row names
+  
+malaise.arg <- malaise.arg %>%
+  select(-1) # remove order column
+
+arg.1 <- as.matrix(apply(malaise.arg,2,as.numeric)) # convert to numeric
+
+row.names(arg.1) <- malaise.arg.orders # b) use your species names as row names
+
+# Argentina UV
+uv.arg <- insect_arg_u %>%
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) # replace NA with 0
+
+uv.arg.orders <- uv.arg$order # create vector for row names
+  
+uv.arg <- uv.arg %>%
+  select(-1) # remove order column
+
+arg.2 <- as.matrix(apply(uv.arg,2,as.numeric)) # convert to numeric
+
+row.names(arg.2) <- uv.arg.orders # b) use your species names as row names
+
+# Combine into one list 
+div.arg <- list(Malaise = arg.1, UV = arg.2)
+
+```
+
+## Model Diversity
+
+Only need to run once, then save model output (takes a long time).
+```{r eval=FALSE, include=FALSE}
+
+#### Run iNEXT 3D ####
+
+# Florida
+inext.fl <- iNEXTbeta3D(div.fl, q = c(0, 1, 2), 
+                                      diversity = "TD",
+                                      datatype = "abundance",
+                                      nboot = 50, conf = 0.95)
+
+
+ggiNEXTbeta3D(inext.fl, type = 'B')
+
+# Argentina
+inext.arg <- iNEXTbeta3D(div.arg, q = c(0, 1, 2), 
+                                      diversity = "TD",
+                                      datatype = "abundance",
+                                      nboot = 50, conf = 0.95)
+
+
+ggiNEXTbeta3D(inext.arg, type = 'B')
+
+
+#saveRDS(inext.fl, "../models/insect_diversity_fl.csv")
+#saveRDS(inext.arg, "../models/insect_diversity_arg.csv")
+
+```
+
+## Load Model Data
+
+```{r}
+
+inext.fl <- read_rds("../models/insect_diversity_fl.csv")
+inext.arg <- read_rds("../models/insect_diversity_arg.csv")
+
+```
+
+
+
+
+## Extract Estimates
+
+Standardize by completeness
+```{r}
+
+# Rarefaction curves go to 100% completeness, so I can estimate at that level.
+
+# Extract estimates of each diversity value
+diversity_fl_alpha <- as.data.frame(rbind(inext.fl$Malaise$alpha, 
+                                   inext.fl$UV$alpha))
+diversity_fl_gamma <- as.data.frame(rbind(inext.fl$Malaise$gamma, 
+                                   inext.fl$UV$gamma))
+diversity_fl_beta <- as.data.frame(rbind(inext.fl$Malaise$beta, 
+                                   inext.fl$UV$beta))
+diversity_fl_sor <- as.data.frame(rbind(inext.fl$Malaise$`1-C`, 
+                                   inext.fl$UV$`1-C`))
+diversity_fl_jac <- as.data.frame(rbind(inext.fl$Malaise$`1-U`, 
+                                   inext.fl$UV$`1-U`))
+diversity_arg_alpha <- as.data.frame(rbind(inext.arg$Malaise$alpha, 
+                                   inext.arg$UV$alpha))
+diversity_arg_gamma <- as.data.frame(rbind(inext.arg$Malaise$gamma, 
+                                   inext.arg$UV$gamma))
+diversity_arg_beta <- as.data.frame(rbind(inext.arg$Malaise$beta, 
+                                   inext.arg$UV$beta))
+diversity_arg_sor <- as.data.frame(rbind(inext.arg$Malaise$`1-C`, 
+                                   inext.arg$UV$`1-C`))
+diversity_arg_jac <- as.data.frame(rbind(inext.arg$Malaise$`1-U`, 
+                                   inext.arg$UV$`1-U`))
+
+
+```
+
+Florida
+```{r}
+# Alpha values:
+alpha_fl <- 
+rbind(
+diversity_fl_alpha %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_alpha %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_alpha %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_alpha %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_fl_alpha %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_fl_alpha %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, alpha)")
+)
+names(alpha_fl) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_a", 
+                      "Method_a", "s.e._a", "LCL_a", "UCL_a", "Type")
+alpha_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Beta values:
+beta_fl <-  
+rbind(
+diversity_fl_beta %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_beta %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_beta %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_beta %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_fl_beta %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_fl_beta %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, alpha)")
+)
+names(beta_fl) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_b", 
+                      "Method_b", "s.e._b", "LCL_b", "UCL_b", "Type")
+beta_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Gamma values:
+gamma_fl <-  
+rbind(
+diversity_fl_gamma %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Observed_SC(n, gamma)"),
+diversity_fl_gamma %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Observed_SC(n, gamma)"),
+diversity_fl_gamma %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Observed_SC(n, gamma)"),
+diversity_fl_gamma %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, gamma)"),
+diversity_fl_gamma %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, gamma)"),
+diversity_fl_gamma %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, gamma)")
+)
+names(gamma_fl) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_g", 
+                      "Method_g", "s.e._g", "LCL_g", "UCL_g", "Type")
+gamma_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Sorensen values:
+sorensen_fl <-  
+rbind(
+diversity_fl_sor %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_sor %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_sor %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_sor %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_fl_sor %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_fl_sor %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, alpha)")
+)
+names(sorensen_fl) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_s", 
+                      "Method_s", "s.e._s", "LCL_s", "UCL_s", "Type")
+sorensen_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Jaccard values:
+jaccard_fl <-  
+rbind(
+diversity_fl_jac %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_jac %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_jac %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Extrap_SC(2n, alpha)"),
+diversity_fl_jac %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_fl_jac %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_fl_jac %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, alpha)")
+)
+names(jaccard_fl) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_j", 
+                      "Method_j", "s.e._j", "LCL_j", "UCL_j", "Type")
+jaccard_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+diversity_df_fl <- alpha_fl %>%
+  plyr::join(beta_fl) %>%
+  plyr::join(gamma_fl, by = c("Trap_Type", "q_level", "Type"))%>%
+  plyr::join(sorensen_fl, by = c("Trap_Type", "q_level", "Type"))%>%
+  plyr::join(jaccard_fl, by = c("Trap_Type", "q_level", "Type"))
+```
+
+Argentina
+```{r}
+# Alpha values:
+alpha_arg <- 
+rbind(
+diversity_arg_alpha %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_alpha %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_alpha %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_alpha %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_alpha %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_alpha %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, alpha)")
+)
+names(alpha_arg) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_a", 
+                      "Method_a", "s.e._a", "LCL_a", "UCL_a", "Type")
+alpha_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Beta values:
+beta_arg <-  
+rbind(
+diversity_arg_beta %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_beta %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_beta %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_beta %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_beta %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_beta %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, alpha)")
+)
+names(beta_arg) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_b", 
+                      "Method_b", "s.e._b", "LCL_b", "UCL_b", "Type")
+beta_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Gamma values:
+gamma_arg <-  
+rbind(
+diversity_arg_gamma %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Observed_SC(n, gamma)"),
+diversity_arg_gamma %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Observed_SC(n, gamma)"),
+diversity_arg_gamma %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Observed_SC(n, gamma)"),
+diversity_arg_gamma %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, gamma)"),
+diversity_arg_gamma %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, gamma)"),
+diversity_arg_gamma %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, gamma)")
+)
+names(gamma_arg) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_g", 
+                      "Method_g", "s.e._g", "LCL_g", "UCL_g", "Type")
+gamma_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Sorensen values:
+sorensen_arg <-  
+rbind(
+diversity_arg_sor %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_sor %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_sor %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_sor %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_sor %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_sor %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, alpha)")
+)
+names(sorensen_arg) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_s", 
+                      "Method_s", "s.e._s", "LCL_s", "UCL_s", "Type")
+sorensen_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Jaccard values:
+jaccard_arg <-  
+rbind(
+diversity_arg_jac %>%
+  filter(Dataset == "Malaise" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_jac %>%
+  filter(Dataset == "Malaise" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_jac %>%
+  filter(Dataset == "Malaise" & Order.q == 2 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_jac %>%
+  filter(Dataset == "UV" & Order.q == 0 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_jac %>%
+  filter(Dataset == "UV" & Order.q == 1 & Method == "Observed_SC(n, alpha)"),
+diversity_arg_jac %>%
+  filter(Dataset == "UV" & Order.q == 2 & Method == "Observed_SC(n, alpha)")
+)
+names(jaccard_arg) <- c("Trap_Type", "q_level", "SC", "Size", "Diversity_j", 
+                      "Method_j", "s.e._j", "LCL_j", "UCL_j", "Type")
+jaccard_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+diversity_df_arg <- alpha_arg %>%
+  plyr::join(beta_arg) %>%
+  plyr::join(gamma_arg, by = c("Trap_Type", "q_level", "Type"))%>%
+  plyr::join(sorensen_arg, by = c("Trap_Type", "q_level", "Type"))%>%
+  plyr::join(jaccard_arg, by = c("Trap_Type", "q_level", "Type"))
+
+```
+
+
+```{r}
+
+plotdat_fl_diversity <- data.frame(
+  Trap_Type = c(diversity_df_fl$Trap_Type, diversity_df_fl$Trap_Type, 
+            diversity_df_fl$Trap_Type, diversity_df_fl$Trap_Type, diversity_df_fl$Trap_Type),
+  Precision = rep("Order", 30),
+  q = c(diversity_df_fl$q_level, diversity_df_fl$q_level, diversity_df_fl$q_level, 
+        diversity_df_fl$q_level, diversity_df_fl$q_level),
+  Type = c(rep("Alpha", 6), rep("Beta", 6), rep("Gamma", 6), 
+           rep("Sorensen", 6), rep("Jaccard", 6)),
+  Diversity =  c(diversity_df_fl$Diversity_a, diversity_df_fl$Diversity_b,
+                 diversity_df_fl$Diversity_g, diversity_df_fl$Diversity_s,
+                 diversity_df_fl$Diversity_j),
+  SE =  c(diversity_df_fl$s.e._a, diversity_df_fl$s.e._b,
+          diversity_df_fl$s.e._g, diversity_df_fl$s.e._s, diversity_df_fl$s.e._j),
+  LCL = c(diversity_df_fl$LCL_a, diversity_df_fl$LCL_b,
+          diversity_df_fl$LCL_g, diversity_df_fl$LCL_s, diversity_df_fl$LCL_j),
+  UCL = c(diversity_df_fl$UCL_a, diversity_df_fl$UCL_b,
+          diversity_df_fl$UCL_g, diversity_df_fl$UCL_s, diversity_df_fl$UCL_j),
+  Site = "Citrus")
+
+plotdat_arg_diversity <- data.frame(
+  Trap_Type = c(diversity_df_arg$Trap_Type, diversity_df_arg$Trap_Type, 
+            diversity_df_arg$Trap_Type, diversity_df_arg$Trap_Type, diversity_df_arg$Trap_Type),
+  Precision = rep("Order", 30),
+  q = c(diversity_df_arg$q_level, diversity_df_arg$q_level, diversity_df_arg$q_level, 
+        diversity_df_arg$q_level, diversity_df_arg$q_level),
+  Type = c(rep("Alpha", 6), rep("Beta", 6), rep("Gamma", 6), 
+           rep("Sorensen", 6), rep("Jaccard", 6)),
+  Diversity =  c(diversity_df_arg$Diversity_a, diversity_df_arg$Diversity_b,
+                 diversity_df_arg$Diversity_g, diversity_df_arg$Diversity_s,
+                 diversity_df_arg$Diversity_j),
+  SE =  c(diversity_df_arg$s.e._a, diversity_df_arg$s.e._b,
+          diversity_df_arg$s.e._g, diversity_df_arg$s.e._s, diversity_df_arg$s.e._j),
+  LCL = c(diversity_df_arg$LCL_a, diversity_df_arg$LCL_b,
+          diversity_df_arg$LCL_g, diversity_df_arg$LCL_s, diversity_df_arg$LCL_j),
+  UCL = c(diversity_df_arg$UCL_a, diversity_df_arg$UCL_b,
+          diversity_df_arg$UCL_g, diversity_df_arg$UCL_s, diversity_df_arg$UCL_j),
+  Site = "Santa Maria")
+
+
+
+plotdat_diversity <- rbind(plotdat_fl_diversity, plotdat_arg_diversity)
+# write to csv
+write.csv(plotdat_diversity, row.names = F, "../output/trap_diversity.csv")
+
+```
+
+# Chao Dissimilarity
+
+## Prepare data
+Separate each site into year 1 and year 2
+
+```{r}
+
+#### Prepare Data Frames ####
+
+# Citrus Malaise: Year 1
+malaise.fl.1 <- insect_dat_fl%>%
+  filter(year == "2021") %>%
+  filter(trap_type == "m") %>% # select only UV traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%  
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) %>% # replace NA with 0
+  ungroup()
+
+malaise.fl.orders.1 <- malaise.fl.1$order # create vector for row names
+  
+malaise.fl.1 <- malaise.fl.1 %>%
+  select(-1) # remove order column
+
+m.fl.1 <- as.matrix(apply(malaise.fl.1,2,as.numeric)) # convert to numeric
+
+row.names(m.fl.1) <- malaise.fl.orders.1 # b) use your species names as row names
+
+# Citrus Malaise: Year 2
+malaise.fl.2 <- insect_dat_fl %>%
+  filter(year == "2022") %>%
+  filter(trap_type == "m") %>% # select only UV traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%  
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) %>% # replace NA with 0
+  ungroup()
+
+malaise.fl.orders.2 <- malaise.fl.2$order # create vector for row names
+  
+malaise.fl.2 <- malaise.fl.2 %>%
+  select(-1) # remove order column
+
+m.fl.2 <- as.matrix(apply(malaise.fl.2,2,as.numeric)) # convert to numeric
+
+row.names(m.fl.2) <- malaise.fl.orders.2 # b) use your species names as row names
+
+# Citrus UV: Year 1
+uv.fl.1 <- insect_dat_fl %>%
+  filter(trap_type == "u") %>% # select only UV traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%  
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) %>% # replace NA with 0
+  ungroup()
+
+uv.fl.orders.1 <- uv.fl.1$order # create vector for row names
+  
+uv.fl.1 <- uv.fl.1 %>%
+  select(-1) # remove order column
+
+u.fl.1 <- as.matrix(apply(uv.fl.1,2,as.numeric)) # convert to numeric
+
+row.names(u.fl.1) <- uv.fl.orders.1 # b) use your species names as row names
+
+# Citrus uv: Year 2
+uv.fl.2 <- insect_dat_fl %>%
+  filter(year == "2022") %>%
+  filter(trap_type == "u") %>% # select only UV traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%  
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) %>% # replace NA with 0
+  ungroup()
+
+uv.fl.orders.2 <- uv.fl.2$order # create vector for row names
+  
+uv.fl.2 <- uv.fl.2 %>%
+  select(-1) # remove order column
+
+u.fl.2 <- as.matrix(apply(uv.fl.2,2,as.numeric)) # convert to numeric
+
+row.names(u.fl.2) <- uv.fl.orders.2 # b) use your species names as row names
+
+# Combine into one list 
+div.fl.year <- list(Malaise.2021 = m.fl.1, Malaise.2022 = m.fl.2,
+               UV.2021 = u.fl.1, UV.2022 = u.fl.2)
+
+# argentina Malaise: Year 1
+malaise.arg.1 <- insect_dat_arg %>%
+  filter(year == "2021") %>%
+  filter(trap_type == "M") %>% # select only UV traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%  
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) %>% # replace NA with 0
+  ungroup()
+
+malaise.arg.orders.1 <- malaise.arg.1$order # create vector for row names
+  
+malaise.arg.1 <- malaise.arg.1 %>%
+  select(-1) # remove order column
+
+m.arg.1 <- as.matrix(apply(malaise.arg.1,2,as.numeric)) # convert to numeric
+
+row.names(m.arg.1) <- malaise.arg.orders.1 # b) use your species names as row names
+
+# argentina Malaise: Year 2
+malaise.arg.2 <- insect_dat_arg %>%
+  filter(year == "2022") %>%
+  filter(trap_type == "M") %>% # select only UV traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%  
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) %>% # replace NA with 0
+  ungroup()
+
+malaise.arg.orders.2 <- malaise.arg.2$order # create vector for row names
+  
+malaise.arg.2 <- malaise.arg.2 %>%
+  select(-1) # remove order column
+
+m.arg.2 <- as.matrix(apply(malaise.arg.2,2,as.numeric)) # convert to numeric
+
+row.names(m.arg.2) <- malaise.arg.orders.2 # b) use your species names as row names
+
+# argentina UV: Year 1
+uv.arg.1 <- insect_dat_arg %>%
+  filter(year == "2021") %>%
+  filter(trap_type == "U") %>% # select only UV traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%  
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) %>% # replace NA with 0
+  ungroup()
+
+uv.arg.orders.1 <- uv.arg.1$order # create vector for row names
+  
+uv.arg.1 <- uv.arg.1 %>%
+  select(-1) # remove order column
+
+u.arg.1 <- as.matrix(apply(uv.arg.1,2,as.numeric)) # convert to numeric
+
+row.names(u.arg.1) <- uv.arg.orders.1 # b) use your species names as row names
+
+# argentina uv: Year 2
+uv.arg.2 <- insect_dat_arg %>%
+  filter(year == "2022") %>%
+  filter(trap_type == "U") %>% # select only UV traps
+  mutate(trap_id = paste(c(trap_id),"_", as.character(date))) %>% # create unique id for each date
+  group_by(trap_id) %>%
+  mutate(total.biomass = sum(length)) %>% # sum all lengths
+  group_by(trap_id, order) %>%
+  summarise(order.biomass = sum(length)) %>% # calculate relative abundance
+  unique()%>%  
+  select(order, trap_id, order.biomass) %>%
+  spread(key = trap_id, value = order.biomass) %>% # assign trap id to columns
+  replace(is.na(.), 0) %>% # replace NA with 0
+  ungroup()
+
+uv.arg.orders.2 <- uv.arg.2$order # create vector for row names
+  
+uv.arg.2 <- uv.arg.2 %>%
+  select(-1) # remove order column
+
+u.arg.2 <- as.matrix(apply(uv.arg.2,2,as.numeric)) # convert to numeric
+
+row.names(u.arg.2) <- uv.arg.orders.2 # b) use your species names as row names
+
+# Combine into one list 
+div.arg.year <- list(Malaise.2021 = m.arg.1, Malaise.2022 = m.arg.2,
+               UV.2021 = u.arg.1, UV.2022 = u.arg.2)
+
+
+```
+
+## Model Dissimilarity
+
+Only need to run once, then save model output (takes a long time).
+```{r eval=FALSE, include=FALSE}
+
+#### Run iNEXT 3D ####
+
+# Florida
+inext.fl.year <- iNEXTbeta3D(div.fl.year, q = c(0, 1, 2), 
+                                      diversity = "TD",
+                                      datatype = "abundance",
+                                      nboot = 50, conf = 0.95)
+
+
+ggiNEXTbeta3D(inext.fl.year, type = 'D')
+
+# Argentina
+inext.arg.year <- iNEXTbeta3D(div.arg.year, q = c(0, 1, 2), 
+                                      diversity = "TD",
+                                      datatype = "abundance",
+                                      nboot = 50, conf = 0.95)
+
+
+ggiNEXTbeta3D(inext.arg.year, type = 'D')
+
+# Save models
+#saveRDS(inext.fl.year, "../models/insect_dissim_fl.csv")
+#saveRDS(inext.arg.year, "../models/insect_dissim_arg.csv")
+
+```
+
+## Load Model Data
+```{r}
+
+inext.fl.year <- read_rds("../models/insect_dissim_fl.csv")
+inext.arg.year <- read_rds("../models/insect_dissim_arg.csv")
+
+```
+
+
+## Extract Estimates
+
+Florida
+```{r}
+#### Standardize by completeness ####
+# Rarefaction curves go to 100% completeness, so I can estimate at that level.
+
+# Extract estimates of each diversity value
+dissimilarity_fl_s <- as.data.frame(rbind(inext.fl.year$Malaise.2021$`1-C`, 
+                                          inext.fl.year$Malaise.2022$`1-C`,
+                                          inext.fl.year$UV.2021$`1-C`,
+                                          inext.fl.year$UV.2022$`1-C`))
+dissimilarity_fl_j <- as.data.frame(rbind(inext.fl.year$Malaise.2021$`1-U`, 
+                                          inext.fl.year$Malaise.2022$`1-U`,
+                                          inext.fl.year$UV.2021$`1-U`,
+                                          inext.fl.year$UV.2022$`1-U`))
+
+
+# Sorensen values:
+sorensen_fl <- 
+rbind(
+dissimilarity_fl_s %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 0 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 1 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 2 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 0 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 1 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 2 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "UV.2021" & Order.q == 0 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "UV.2021" & Order.q == 1 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "UV.2021" & Order.q == 2 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "UV.2022" & Order.q == 0 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "UV.2022" & Order.q == 1 & SC == 1),
+dissimilarity_fl_s %>%
+  filter(Dataset == "UV.2022" & Order.q == 2 & SC == 1)
+)
+names(sorensen_fl) <- c("Trap_Type", "q_level", "SC", "Size", "Dissimilarity_s", 
+                      "Method_s", "s.e._s", "LCL_s", "UCL_s", "Type")
+sorensen_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 4)
+
+# Jaccard values:
+jaccard_fl <- 
+rbind(
+dissimilarity_fl_j %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 0 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 1 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 2 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 0 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 1 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 2 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "UV.2021" & Order.q == 0 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "UV.2021" & Order.q == 1 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "UV.2021" & Order.q == 2 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "UV.2022" & Order.q == 0 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "UV.2022" & Order.q == 1 & SC == 1),
+dissimilarity_fl_j %>%
+  filter(Dataset == "UV.2022" & Order.q == 2 & SC == 1)
+)
+names(jaccard_fl) <- c("Trap_Type", "q_level", "SC", "Size", "Dissimilarity_j", 
+                      "Method_j", "s.e._j", "LCL_j", "UCL_j", "Type")
+jaccard_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 4)
+
+dissimilarity_df_fl <- sorensen_fl %>%
+  plyr::join(jaccard_fl) 
+
+```
+
+
+Argentina
+
+```{r}
+
+dissimilarity_arg_s <- as.data.frame(rbind(inext.fl.year$Malaise.2021$`1-C`, 
+                                          inext.fl.year$Malaise.2022$`1-C`,
+                                          inext.fl.year$UV.2021$`1-C`,
+                                          inext.fl.year$UV.2022$`1-C`))
+dissimilarity_arg_j <- as.data.frame(rbind(inext.fl.year$Malaise.2021$`1-U`, 
+                                          inext.fl.year$Malaise.2022$`1-U`,
+                                          inext.fl.year$UV.2021$`1-U`,
+                                          inext.fl.year$UV.2022$`1-U`))
+
+# Sorensen values:
+sorensen_arg <- 
+rbind(
+dissimilarity_arg_s %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 0 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 1 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 2 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 0 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 1 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 2 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "UV.2021" & Order.q == 0 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "UV.2021" & Order.q == 1 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "UV.2021" & Order.q == 2 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "UV.2022" & Order.q == 0 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "UV.2022" & Order.q == 1 & SC == 1),
+dissimilarity_arg_s %>%
+  filter(Dataset == "UV.2022" & Order.q == 2 & SC == 1)
+)
+names(sorensen_arg) <- c("Trap_Type", "q_level", "SC", "Size", "Dissimilarity_s", 
+                      "Method_s", "s.e._s", "LCL_s", "UCL_s", "Type")
+sorensen_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 4)
+
+# Jaccard values:
+jaccard_arg <- 
+rbind(
+dissimilarity_arg_j %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 0 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 1 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "Malaise.2021" & Order.q == 2 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 0 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 1 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "Malaise.2022" & Order.q == 2 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "UV.2021" & Order.q == 0 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "UV.2021" & Order.q == 1 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "UV.2021" & Order.q == 2 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "UV.2022" & Order.q == 0 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "UV.2022" & Order.q == 1 & SC == 1),
+dissimilarity_arg_j %>%
+  filter(Dataset == "UV.2022" & Order.q == 2 & SC == 1)
+)
+names(jaccard_arg) <- c("Trap_Type", "q_level", "SC", "Size", "Dissimilarity_j", 
+                      "Method_j", "s.e._j", "LCL_j", "UCL_j", "Type")
+jaccard_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 4)
+
+dissimilarity_df_arg <- sorensen_arg %>%
+  plyr::join(jaccard_arg) 
+
+```
+
+Combined
+```{r}
+
+dissimilarity_df <- rbind(dissimilarity_df_fl, dissimilarity_df_arg)
+dissimilarity_df$Site <- c(rep("Citrus", 12), rep("Santa Maria", 12))
+
+
+write.csv(dissimilarity_df, "../output/trap_dissimilarity.csv", row.names = F)
+```
+
+# Plot Diversity and Dissimilarity
+
+
+### Malaise
+```{r}
+# Alpha
+alpha.plot.m <- ggplotGrob(
+ggplot(data = plotdat_diversity[plotdat_diversity$Type == "Alpha" &
+                                  plotdat_diversity$Trap_Type == "Malaise",]) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+  scale_y_continuous(limits = c(0, 6)) +
+  labs(x = NULL, y = expression("D"[alpha]), title = "Malaise Trap Diversity") +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+        axis.text.y = element_text(size = 15),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 30, face = "bold", angle = 0, 
+                                    vjust = 0.5, family = "serif"),
+        legend.position = "none"))
+
+grid.arrange(alpha.plot.m)
+
+# Beta
+beta.plot.m <- ggplotGrob(
+ggplot(data = plotdat_diversity[plotdat_diversity$Type == "Beta" &
+                                  plotdat_diversity$Trap_Type == "Malaise",]) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+  scale_y_continuous(limits = c(0, 4)) +
+  labs(x = NULL, y = expression("D"[beta])) +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 30, face = "bold", angle = 0, 
+                                    vjust = 0.5, family = "serif"),
+        legend.position = "none"))
+
+# Gamma
+gamma.plot.m <- ggplotGrob(
+ggplot(data = plotdat_diversity[plotdat_diversity$Type == "Gamma" &
+                                  plotdat_diversity$Trap_Type == "Malaise",]) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+  scale_y_continuous(limits = c(0, 15)) +
+  scale_x_discrete(labels=function(x){sub("\\s", "\n", x)}) +
+  labs(x = NULL, y = expression("D"[gamma])) +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+        axis.text.x = element_text(size = 12),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 30, face = "bold", angle = 0, 
+                                    vjust = 0.5, family = "serif"),
+        legend.position = c(0.8, 0.8),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12)))
+
+#### Arrange Plots ####
+
+# assign all the same width
+p.diversity.m <- rbind(alpha.plot.m, beta.plot.m, gamma.plot.m, size = "last")
+
+```
+
+### UV
+```{r}
+# Alpha
+alpha.plot.u <- ggplotGrob(
+ggplot(data = plotdat_diversity[plotdat_diversity$Type == "Alpha" &
+                                  plotdat_diversity$Trap_Type == "UV",]) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+  scale_y_continuous(limits = c(0, 10),
+                     labels = scales::label_number(accuracy = 1)) +
+  labs(x = NULL, y = NULL, title = "UV Trap Diversity") +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+        axis.text.y = element_text(size = 15),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.position = "none"))
+
+# Beta
+beta.plot.u <- ggplotGrob(
+ggplot(data = plotdat_diversity[plotdat_diversity$Type == "Beta" &
+                                  plotdat_diversity$Trap_Type == "UV",]) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+  scale_y_continuous(limits = c(0, 7)) +
+  labs(x = NULL, y = NULL) +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.position = "none"))
+
+# Gamma
+gamma.plot.u <- ggplotGrob(
+ggplot(data = plotdat_diversity[plotdat_diversity$Type == "Gamma" &
+                                  plotdat_diversity$Trap_Type == "UV",]) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+  scale_y_continuous(limits = c(0, 15)) +
+  scale_x_discrete(labels=function(x){sub("\\s", "\n", x)}) +
+  labs(x = NULL, y = NULL) +
+  facet_grid(~q) +
+  guides(shape=guide_legend("inc_abu"), color = "none") + # remove site from legend
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+        axis.text.x = element_text(size = 12),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.position = c(0.9, 0.8),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12)))
+
+
+#### Arrange Plots ####
+
+# assign all the same width
+p.diversity.u <- rbind(alpha.plot.u, beta.plot.u, gamma.plot.u, size = "last")
+
+
+p.diversity.u <- grid.arrange(p.diversity.u)
+```
+
+
+
+## Combined
+
+```{r}
+
+#pdf(file = "figures/prey_diversity.pdf", height = 11, width = 12)
+
+grid.arrange(p.diversity.m, p.diversity.u, nrow = 1)
+
+#dev.off()
+```
+
+
+# Summary Statistics
+
+```{r}
+
+insect_fl <- insect_dat_fl %>%
+  mutate(order = ifelse(order == "blattoadea", "blattodea", order)) %>%
+  mutate(order = ifelse(order == "cicadidae", "hemiptera", order)) %>%
+  filter(order != "1+83:111" & order != "embioptera") %>%
+  mutate(trap = paste(trap_id, trap_type, "_", date)) %>%
+  group_by(trap_id, trap_type, date, year) %>%
+  dplyr::count(order) %>%
+  dplyr::rename(count.order = n) %>%
+  group_by(order, trap_id, trap_type, date) %>%
+  dplyr::summarise(total = sum(count.order)) %>% # sum all groups
+  ungroup ()
+
+insect_arg <- insect_dat_arg %>%
+  mutate(trap = paste(trap_id, trap_type, "_", date)) %>%
+  group_by(trap_id, trap_type, date, year) %>%
+  dplyr::count(order) %>%
+  dplyr::rename(count.order = n) %>%
+  group_by(order, trap_id, trap_type, date) %>%
+  dplyr::summarise(total = sum(count.order)) %>% # sum all groups
+  ungroup ()
+
+
+florida_summary <- data.frame(
+  site = "Citrus",
+  total_abundance = sum(insect_fl$total),
+  n_orders = length(unique(c(insect_fl$order))),
+  mean_count_m = insect_fl %>%
+    filter(trap_type == "m") %>%
+    group_by(trap_id, date) %>%
+    summarise(sum = sum(total)) %>%
+    ungroup() %>%
+    summarise(mean_count_m = mean(sum)),
+  se_count_m = insect_fl %>%
+    filter(trap_type == "m") %>%
+    group_by(trap_id, date) %>%
+    summarise(sum = sum(total)) %>%
+    ungroup() %>%
+    summarise(se_count_m = stderr(sum)),  
+  mean_count_u = insect_fl %>%
+    filter(trap_type == "u") %>%
+    group_by(trap_id, date) %>%
+    summarise(sum = sum(total)) %>%
+    ungroup() %>%
+    summarise(mean_count_u = mean(sum)),
+  se_count_u = insect_fl %>%
+    filter(trap_type == "u") %>%
+    group_by(trap_id, date) %>%
+    summarise(sum = sum(total)) %>%
+    ungroup() %>%
+    summarise(se_count_u = stderr(sum))
+  )
+
+argentina_summary <- data.frame(
+  site = "Santa Maria",
+  total_abundance = sum(insect_arg$total),
+  n_orders = length(unique(c(insect_arg$order))),
+  mean_count_m = insect_arg %>%
+    filter(trap_type == "M") %>%
+    group_by(trap_id, date) %>%
+    summarise(sum = sum(total)) %>%
+    ungroup() %>%
+    summarise(mean_count_m = mean(sum)),
+  se_count_m = insect_arg %>%
+    filter(trap_type == "M") %>%
+    group_by(trap_id, date) %>%
+    summarise(sum = sum(total)) %>%
+    ungroup() %>%
+    summarise(se_count_m = stderr(sum)),
+  mean_count_u = insect_arg %>%
+    filter(trap_type == "U") %>%
+    group_by(trap_id, date) %>%
+    summarise(sum = sum(total)) %>%
+    ungroup() %>%
+    summarise(mean_count_u = mean(sum)),
+  se_count_u = insect_arg %>%
+    filter(trap_type == "U") %>%
+    group_by(trap_id, date) %>%
+    summarise(sum = sum(total)) %>%
+    ungroup() %>%
+    summarise(se_count_u = stderr(sum))
+  )
+
+all_summary <- rbind(florida_summary, argentina_summary)
+
+# which orders appear in each site?
+sort(unique(insect_fl$order))
+sort(unique(insect_arg$order))
+
+write.csv(all_summary, "../output/insect_abundance_summary.csv")
+
+```
+

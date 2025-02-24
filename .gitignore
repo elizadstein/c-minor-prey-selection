@@ -6,6 +6,10 @@
 .RData
 .RDataTmp
 
+# Model outputs
+*.rda
+
+
 # User-specific files
 .Ruserdata
 

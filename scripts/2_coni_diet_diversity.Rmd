@@ -1,0 +1,2669 @@
+---
+title: "CONI Diet Diversity Analysis"
+output: html_document
+date: '2023-04-25'
+editor_options: 
+  chunk_output_type: console
+---
+
+# Initialization
+
+Load packages
+
+```{r}
+
+library(gridExtra)
+library(vegan)
+library(ggpubr)
+library(grid)
+library(patchwork)
+library(tidyverse)
+library(iNEXT)
+library(iNEXT.beta3D)
+library(iNEXT.4steps)
+
+
+```
+
+Set up parallel processing
+```{r}
+
+library(snow)
+z=vector('list',4)
+z=1:4
+system.time(lapply(z,function(x) Sys.sleep(1)))
+cl<-makeCluster(6, type="SOCK")
+system.time(clusterApply(cl, z,function(x) Sys.sleep(1)))
+stopCluster(cl)
+
+```
+
+
+Custom Functions
+```{r}
+# length of which
+length.which <- function(x) {
+  length(which(x))
+}
+
+# standard error
+sterr <- function(x) sd(x)/sqrt(length(x))
+```
+
+# Prepare Data
+
+Read in data, then clean up data.
+```{r}
+
+# Read in sample metadata
+metadata <- read.csv("../data/qiime_metadata_coni.csv")
+metadata$sample.id <- str_replace_all(metadata$sample.id, "-", ".")
+
+# Read in edited ASV table (see coni_diet_sequence_processing.Rmd)
+asv <- read.csv("../output/asv_edited.csv")
+asv_counts <- asv %>%
+  select(-c("CONI.RSM1145.2", "CONI.RSM1151.1", "CONI.RSM1152.1",
+            "CONI.RSM140.3", "CONI.RSM140.2", "CONI.RSM418.1",
+            "CONI.RSM420.1", "CONI.RSM420.2", "CONI.RSM460.2",
+            "CONI.RSM463.1", "CONI.RSM463.5", "CONI.20801", 
+            "CONI.RSM1152.1", "CONI.RSM140.1", "CONI.RSM140.3", 
+            "CONI.RSM166", "CONI.RSM198", "CONI.RSM311.1",
+            "CONI.RSM319.3"))
+
+
+#### Merge metadata and taxon tables ####
+
+## transpose ASV table
+asv_clean <- asv_counts %>%
+  select(Feature.ID, starts_with("CONI")) %>%
+  t() %>%
+  as.data.frame()
+colnames(asv_clean) <- asv_clean["Feature.ID",]
+bands <- rownames(asv_clean[-1,])
+asv_clean <- asv_clean[-1,]
+asv_clean <- as.data.frame(apply(asv_clean, 2, as.numeric))
+asv_clean <- asv_clean %>%
+  select_if(function(x) sum(x) != 0)  # remove columns with no reads
+asv_clean$sample.id <- bands
+
+# remove rows (samples) with no reads
+asv_clean <- asv_clean[rowSums(asv_clean[,-175]) > 0, ]
+
+# Add metadata
+metadata_asv_clean <- asv_clean  %>%
+  left_join(metadata, by = join_by(sample.id)) %>%
+  select(sample.id, names(metadata), names(asv_clean)) # reorder columns
+
+
+# Clean up and transpose species
+species_clean <- asv_counts %>%
+  select(species, starts_with("CONI")) %>%
+  group_by(species) %>%
+  dplyr::summarise(across(starts_with("CONI"), sum)) %>% # combine identical species
+  filter(species != "") %>% # remove blanks
+  t() %>%
+  as.data.frame()
+colnames(species_clean) <- species_clean["species",]
+# fix transposed df
+bands <- rownames(species_clean[-1,])
+species_clean <- species_clean[-1,]
+species_clean <- as.data.frame(apply(species_clean, 2, as.numeric))
+species_clean <- species_clean %>%
+  select_if(function(x) sum(x) != 0)  # remove columns with no reads
+species_clean$sample.id <- bands # add sample ID back
+
+# remove rows with no reads
+species_clean <- species_clean[rowSums(species_clean[,-43]) > 0, ]
+
+# Add metadata
+metadata_species_clean <- species_clean %>%
+  left_join(metadata, by = join_by(sample.id)) %>%
+  select(sample.id, names(metadata), names(species_clean)) # reorder columns
+
+
+# Clean up and transpose genus
+genus_clean <- asv_counts %>%
+  select(genus, starts_with("CONI")) %>%
+  group_by(genus) %>%
+  dplyr::summarise(across(starts_with("CONI"), sum)) %>% # combine identical genus
+  filter(genus != "") %>% # remove blanks
+  t() %>%
+  as.data.frame()
+colnames(genus_clean) <- genus_clean["genus",]
+# fix transposed df
+bands <- rownames(genus_clean[-1,])
+genus_clean <- genus_clean[-1,]
+genus_clean <- as.data.frame(apply(genus_clean, 2, as.numeric))
+genus_clean <- genus_clean %>%
+  select_if(function(x) sum(x) != 0)  # remove columns with no reads
+genus_clean$sample.id <- bands
+
+# remove rows with no reads
+genus_clean <- genus_clean[rowSums(genus_clean[,-62]) > 0, ]
+
+# Add metadata
+metadata_genus_clean <- genus_clean %>%
+  left_join(metadata, by = join_by(sample.id)) %>%
+  select(sample.id, names(metadata), names(genus_clean)) # reorder columns
+
+# Clean up and transpose families
+families_clean <- asv_counts %>%
+  select(family, starts_with("CONI")) %>%
+  group_by(family) %>%
+  dplyr::summarise(across(starts_with("CONI"), sum)) %>% # combine identical family
+  filter(family != "") %>% # remove blanks
+  t() %>%
+  as.data.frame()
+colnames(families_clean) <- families_clean["family",]
+# fix transposed df
+bands <- rownames(families_clean[-1,])
+families_clean <- families_clean[-1,]
+families_clean <- as.data.frame(apply(families_clean, 2, as.numeric))
+families_clean <- families_clean %>%
+  select_if(function(x) sum(x) != 0) # remove columns with no reads
+families_clean$sample.id <- bands
+  
+# remove rows with no reads
+families_clean <- families_clean[rowSums(families_clean[,-29]) > 0, ]
+
+# Add metadata
+metadata_families_clean <- families_clean %>%
+  left_join(metadata, by = join_by(sample.id)) %>%
+  select(sample.id, names(metadata), names(families_clean)) # reorder columns
+
+
+# Clean up and transpose orders
+orders_clean <- asv_counts %>%
+  select(order, starts_with("CONI")) %>%
+  group_by(order) %>%
+  dplyr::summarise(across(starts_with("CONI"), sum)) %>% # combine identical order
+  filter(order != "") %>% # remove blanks
+  t() %>%
+  as.data.frame()
+colnames(orders_clean) <- orders_clean["order",]
+# fix transposed df
+bands <- rownames(orders_clean[-1,])
+orders_clean <- orders_clean[-1,]
+orders_clean <- as.data.frame(apply(orders_clean, 2, as.numeric))
+orders_clean <- orders_clean %>%
+  select_if(function(x) sum(x) != 0)  # remove columns with no reads
+orders_clean$sample.id <- bands
+
+# remove rows with no reads
+orders_clean <- orders_clean[rowSums(orders_clean[,-12]) > 0, ]
+
+# Add metadata
+metadata_orders_clean <- orders_clean %>%
+  left_join(metadata, by = join_by(sample.id)) %>%
+  select(sample.id, names(metadata), names(orders_clean)) # reorder columns
+
+
+```
+
+
+# Diet Contents Summary Plots
+
+
+## Bar Charts: FOO
+```{r}
+
+# gather data and calculate RRA and FOO
+orders_richness <- orders_clean %>%
+  gather(-sample.id, key = order, value = rra) %>%
+  mutate(foo = ifelse(rra > 0, 1, 0)) %>%
+  mutate(source = ifelse(grepl("CONI.2", sample.id), 
+                         "Citrus", "Santa Maria"))  #add source
+
+# make another df for sums and elongate
+orders_foo_sum <- orders_clean %>%
+  gather(-sample.id, key = order, value = rra) %>%
+  mutate(foo = ifelse(rra > 0, 1, 0)) %>% # create column for foo
+  mutate(source = ifelse(grepl("CONI.2", sample.id), 
+                         "Citrus", "Santa Maria")) %>% #add source
+  select(-sample.id) %>%
+  group_by(order, source) %>%
+  dplyr::summarise(foo = sum(foo)) %>%
+  mutate(foo_pct = ifelse(source == "Citrus", foo/28, foo/35)) %>% # foo_pct
+  ungroup()
+
+orders_rra_sum <- orders_clean %>%
+  gather(-sample.id, key = order, value = rra) %>%
+  mutate(source = ifelse(grepl("CONI.2", sample.id), 
+                         "Citrus", "Santa Maria")) %>% #add source
+  select(-sample.id) %>%
+  group_by(order, source) %>%
+  dplyr::summarise(rra = sum(rra)) %>%
+  mutate(rra_pct = ifelse(source == "Citrus", rra/28, rra/35)) # foo_pct
+
+orders_richness_sum <- full_join(orders_rra_sum, orders_foo_sum, by = c("order", "source"))
+orders_richness_sum <- orders_richness_sum %>%
+  mutate(source = ifelse(source == "Santa Maria", "Santa María", "Citrus"))
+
+color_order <- unique(orders_richness_sum$order)
+
+
+# FOO Bar Chart
+(foo_plot <- ggplot(data = orders_richness_sum) +
+  geom_col(aes(x = source, y = foo_pct, fill = order), color = "black") +
+  labs(x = NULL, y = "Frequency of Occurrence") +
+  scale_fill_brewer(palette = "Paired") +
+  theme_classic() +
+    theme(text = element_text(size = 20),
+          axis.title.y = element_text(face = "bold"),
+          axis.text.x = element_text(size = 20, color = "black"),
+        plot.title = element_text(hjust = 0.5, ),
+        legend.title = element_blank(),
+        legend.position = c(0.25, 0.8)))
+
+
+```
+
+
+## Bar Charts: RRA
+
+```{r}
+# sum all reads per sample
+sample_totals <- orders_richness %>%
+  select(-foo) %>%
+  group_by(sample.id) %>%
+  dplyr::summarise(sample.total.reads = sum(rra))
+
+# make another df for sums
+orders_richness_indiv <- orders_richness %>%
+  select(-foo) %>%
+  left_join(sample_totals, by = join_by(sample.id)) %>% # add sample totals
+  dplyr::mutate(rra_pct = rra/sample.total.reads) %>% # sum RRA and FOO for each indiv
+  left_join(metadata, by = join_by(sample.id)) %>%
+  select(sample.id, collect.date, order, rra, source.x, # add collection date
+         sample.total.reads, rra_pct) %>%
+  rename(source = source.x) 
+
+# convert to date
+orders_richness_indiv$collect.date <- as.Date(orders_richness_indiv$collect.date,
+                                              "%m/%d/%y")
+# convert to julian date
+orders_richness_indiv$jday <- julian(orders_richness_indiv$collect.date)
+orders_richness_indiv$sample.day <- as.factor(paste(orders_richness_indiv$jday,
+                                      "_", orders_richness_indiv$sample.id))
+
+# order by julian date (aka capture order)
+orders_richness_indiv$sample.day <- fct_reorder(orders_richness_indiv$sample.day, orders_richness_indiv$jday)
+
+
+# separate into a df for each site
+orders_richness_indiv_citrus <- orders_richness_indiv %>%
+  filter(source == "Citrus")
+
+orders_richness_indiv_citrus <- orders_richness_indiv_citrus %>%
+  filter(rra_pct > 0) %>% # remove orders with 0
+  group_by(sample.id) %>% # group by sample id
+  mutate(n_orders = n_distinct(order)) %>% # count orders in each sample
+  right_join(orders_richness_indiv_citrus) %>% # join with df containing all orders
+  arrange(sample.id, n_orders) %>% # arrange by sample id and count of orders
+  group_by(sample.id) %>% # group for filling
+  fill(n_orders, .direction = "down") %>% # fill in NAs from above
+  mutate(sample.order = paste(n_orders, sample.day, sep = "_")) # add in front of sample day for x axis
+
+orders_richness_indiv_rsm <- orders_richness_indiv %>%
+  filter(source == "Santa Maria") 
+
+orders_richness_indiv_rsm <- orders_richness_indiv %>%
+  filter(rra_pct > 0) %>% # remove orders with 0
+  group_by(sample.id) %>% # group by sample id
+  mutate(n_orders = n_distinct(order)) %>% # count orders in each sample
+  right_join(orders_richness_indiv_rsm) %>% # join with df containing all orders
+  arrange(sample.id, n_orders) %>% # arrange by sample id and count of orders
+  group_by(sample.id) %>% # group for filling
+  fill(n_orders, .direction = "down") %>% # fill in NAs from above
+  mutate(sample.order = paste(n_orders, sample.day, sep = "_")) # add in front of sample day for x axis
+
+  
+
+# Citrus Individuals Bar Chart
+(citrus_plot_indiv <-  ggplot(data = orders_richness_indiv_citrus) +
+  geom_col(aes(x = sample.order, y = rra_pct, fill = order), color = "black",
+           position = "stack") +
+  labs(x = "Citrus", y = "Relative Read Abundance") +
+  scale_fill_brewer(palette = "Paired")  +
+  theme_classic() +
+    theme(text = element_text(size = 20),
+          axis.title.y = element_text(face = "bold"),
+        axis.text.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        legend.title = element_blank(),
+        legend.position = "none"))
+
+# RSM Individuals Bar Chart
+(rsm_plot_indiv <- ggplot(data = orders_richness_indiv_rsm) +
+  geom_col(aes(x = sample.order, y = rra_pct, fill = order), color = "black",
+           position = "stack") +
+  labs(x = "Santa María", y = "Relative Read Abundance") +
+  scale_fill_brewer(palette = "Paired")  +
+  theme_classic() +
+    theme(text = element_text(size = 20),
+          axis.title.y = element_text(face = "bold"),
+          axis.text.x = element_blank(),
+        plot.title = element_text(hjust = 0.5, vjust = -50),
+        legend.title = element_blank(),
+        legend.position = "none"))
+
+# with legend
+plot_indiv <- ggarrange(citrus_plot_indiv, rsm_plot_indiv, 
+                        nrow = 2, common.legend = TRUE, legend="right")
+# without legend
+plot_indiv <- (citrus_plot_indiv / rsm_plot_indiv) +
+  plot_layout(axes = "collect")
+
+
+```
+
+
+## Combined charts
+
+```{r}
+#pdf("figures/barchart_foo_rra.pdf", width = 13, height = 8)
+
+foo_plot + plot_indiv
+
+#dev.off()
+```
+
+
+
+# Summary Statistics
+
+## All
+```{r}
+
+# total reads for all birds
+all_seqs <- read.csv("../output/seq_table.csv") 
+all_seqs <- all_seqs %>%
+  select(starts_with("CONI.2") | starts_with("CONI.R"))
+
+all_seqs <- all_seqs[rowSums(all_seqs) > 0, ]
+total_asv <- nrow(all_seqs) # 1533 ASVs
+total_samples <- ncol(all_seqs) # 167 samples
+total_seq_depth <- sum(colSums(all_seqs)) # 9949645 reads
+total_mean_coverage <- mean(colSums(all_seqs)) # mean coverage = 59578.71
+total_std_err_cov <- sterr(colSums(all_seqs))# std error = 6209.882
+
+# reads assigned to CONI
+rowSums(all_seqs[1,]) # 8108317   assigned to CONI
+sum(colSums(all_seqs)) - rowSums(all_seqs[1,]) # 1841328 assigned to arthropods
+
+
+# assigned to insects
+
+all_insect <- asv_clean %>%
+  select(-sample.id)
+all_insect <- all_insect[, colSums(all_insect) > 0]
+all_insect <- all_insect[rowSums(all_insect) > 0, ]
+
+insect_samples <- nrow(all_insect) # 63 samples
+insect_seqs <- sum(all_insect) # 264962 insect sequences
+insect_mean_coverage <- mean(rowSums(all_insect)) # 4205.746 mean
+insect_std_err_cov <- sd(rowSums(all_insect) / sqrt(length(rowSums(all_insect)))) # std error = 1298.698
+insect_asv <- ncol(all_insect) # 74 ASVs
+total_asv_sample <- apply(all_insect != 0, MARGIN = 1, FUN = length.which) # number of ASVs per sample
+mean_asv_per_sample <- mean(total_asv_sample)
+stderr_asv_per_sample <- sterr(total_asv_sample)
+
+
+# percentages 
+all_species <- asv_counts %>%
+  filter(species != "") %>%
+  select(starts_with("CONI"))
+
+all_species <- all_species[, colSums(all_species) > 0]
+all_species <- all_species[rowSums(all_species) > 0, ]
+n_species <- nrow(all_species) # 61 assigned to species
+pct_species <- (nrow(all_species) / ncol(all_insect))*100 # 32%
+
+all_genus <- asv_counts %>%
+  filter(genus != "") %>%
+  select(starts_with("CONI.2") | starts_with("CONI.R"))
+all_genus <- all_genus[, colSums(all_genus) > 0]
+all_genus <- all_genus[rowSums(all_genus) > 0, ]
+n_genus <- nrow(all_genus)
+pct_genus <- (nrow(all_genus) / ncol(all_insect))*100
+
+all_family <- asv_counts %>%
+  filter(family != "") %>%
+  select(starts_with("CONI.2") | starts_with("CONI.R"))
+all_family <- all_family[, colSums(all_family) > 0]
+all_family <- all_family[rowSums(all_family) > 0, ]
+n_family <- nrow(all_family)
+pct_family <- (nrow(all_family) / ncol(all_insect))*100
+
+all_order <- asv_counts %>%
+  filter(order != "") %>%
+  select(starts_with("CONI.2") | starts_with("CONI.R"))
+all_order <- all_order[, colSums(all_order) > 0]
+all_order <- all_order[rowSums(all_order) > 0, ]
+n_order <- nrow(all_order)
+pct_order <- (nrow(all_order) / ncol(all_insect))*100
+
+summary_stats_all <- data.frame(
+  total_seq_depth = total_seq_depth, 
+  total_mean_coverage = total_mean_coverage, 
+  total_std_err_cov = total_std_err_cov,
+  insect_seqs = insect_seqs,
+  insect_mean_coverage = insect_mean_coverage,
+  insect_std_err_cov = insect_std_err_cov,
+  total_asv = total_asv, 
+  total_samples = total_samples, 
+  insect_asv = insect_asv,
+  insect_samples = insect_samples,
+  mean_asv_per_sample = mean_asv_per_sample,
+  stderr_asv_per_sample = stderr_asv_per_sample,
+  n_species = n_species,
+  pct_species = pct_species,
+  n_genus = n_genus,
+  pct_genus = pct_genus,
+  n_family = n_family,
+  pct_family = pct_family,
+  n_order = n_order,
+  pct_order = pct_order
+  )
+
+```
+
+## Argentina
+```{r}
+
+# total reads for all birds
+arg_seqs <- read.csv("../output/seq_table.csv") 
+arg_seqs <- arg_seqs %>%
+  select(starts_with("CONI.R"))
+
+arg_seqs <- arg_seqs[rowSums(arg_seqs) > 0, ]
+total_asv <- nrow(arg_seqs) # 1533 ASVs
+total_samples <- ncol(arg_seqs) # 167 samples
+total_seq_depth <- sum(colSums(arg_seqs)) # 9949645 reads
+total_mean_coverage <- mean(colSums(arg_seqs)) # mean coverage = 59578.71
+total_std_err_cov <- sterr(colSums(arg_seqs))# std error = 6209.882
+
+# reads assigned to CONI
+rowSums(arg_seqs[1,]) # 8108317   assigned to CONI
+sum(colSums(arg_seqs)) - rowSums(arg_seqs[1,]) # 1841328 assigned to arthropods
+
+
+# assigned to insects
+
+arg_insect <- asv_clean %>%
+  filter(str_detect(sample.id, 'R')) %>%
+  select(-sample.id) 
+arg_insect <- arg_insect[, colSums(arg_insect) > 0]
+arg_insect <- arg_insect[rowSums(arg_insect) > 0, ]
+
+
+insect_samples <- nrow(arg_insect) # 63 samples
+insect_seqs <- sum(arg_insect) # 264962 insect sequences
+insect_mean_coverage <- mean(rowSums(arg_insect)) # 4205.746 mean
+insect_std_err_cov <- sd(rowSums(arg_insect) / sqrt(length(rowSums(arg_insect)))) # std error = 1298.698
+insect_asv <- ncol(arg_insect) # 74 ASVs
+total_asv_sample <- apply(arg_insect != 0, MARGIN = 1, FUN = length.which) # number of ASVs per sample
+mean_asv_per_sample <- mean(total_asv_sample)
+stderr_asv_per_sample <- sterr(total_asv_sample)
+
+
+# percentages 
+arg_species <- asv_counts %>%
+  filter(species != "") %>%
+  select(starts_with("CONI.R"))
+
+arg_species <- arg_species[, colSums(arg_species) > 0]
+arg_species <- arg_species[rowSums(arg_species) > 0, ]
+n_species <- nrow(arg_species) # 61 assigned to species
+pct_species <- (nrow(arg_species) / ncol(arg_insect))*100 # 32%
+
+arg_genus <- asv_counts %>%
+  filter(genus != "") %>%
+  select(starts_with("CONI.R"))
+arg_genus <- arg_genus[, colSums(arg_genus) > 0]
+arg_genus <- arg_genus[rowSums(arg_genus) > 0, ]
+n_genus <- nrow(arg_genus)
+pct_genus <- (nrow(arg_genus) / ncol(arg_insect))*100
+
+arg_family <- asv_counts %>%
+  filter(family != "") %>%
+  select(starts_with("CONI.R"))
+arg_family <- arg_family[, colSums(arg_family) > 0]
+arg_family <- arg_family[rowSums(arg_family) > 0, ]
+n_family <- nrow(arg_family)
+pct_family <- (nrow(arg_family) / ncol(arg_insect))*100
+
+arg_order <- asv_counts %>%
+  filter(order != "") %>%
+  select(starts_with("CONI.R"))
+arg_order <- arg_order[, colSums(arg_order) > 0]
+arg_order <- arg_order[rowSums(arg_order) > 0, ]
+n_order <- nrow(arg_order)
+pct_order <- (nrow(arg_order) / ncol(arg_insect))*100
+
+summary_stats_arg <- data.frame(
+  total_seq_depth = total_seq_depth, 
+  total_mean_coverage = total_mean_coverage, 
+  total_std_err_cov = total_std_err_cov,
+  insect_seqs = insect_seqs,
+  insect_mean_coverage = insect_mean_coverage,
+  insect_std_err_cov = insect_std_err_cov,
+  total_asv = total_asv, 
+  total_samples = total_samples, 
+  insect_asv = insect_asv,
+  insect_samples = insect_samples,
+  mean_asv_per_sample = mean_asv_per_sample,
+  stderr_asv_per_sample = stderr_asv_per_sample,
+  n_species = n_species,
+  pct_species = pct_species,
+  n_genus = n_genus,
+  pct_genus = pct_genus,
+  n_family = n_family,
+  pct_family = pct_family,
+  n_order = n_order,
+  pct_order = pct_order
+  )
+
+```
+
+
+
+
+## Florida
+```{r}
+
+# total reads for all birds
+fl_seqs <- read.csv("../output/seq_table.csv") 
+fl_seqs <- fl_seqs %>%
+  select(starts_with("CONI.2"))
+
+fl_seqs <- fl_seqs[rowSums(fl_seqs) > 0, ]
+total_asv <- nrow(fl_seqs) # 1533 ASVs
+total_samples <- ncol(fl_seqs) # 167 samples
+total_seq_depth <- sum(colSums(fl_seqs)) # 9949645 reads
+total_mean_coverage <- mean(colSums(fl_seqs)) # mean coverage = 59578.71
+total_std_err_cov <- sterr(colSums(fl_seqs))# std error = 6209.882
+
+# reads assigned to CONI
+rowSums(fl_seqs[1,]) # 8108317   assigned to CONI
+sum(colSums(fl_seqs)) - rowSums(fl_seqs[1,]) # 1841328 assigned to arthropods
+
+
+# assigned to insects
+
+fl_insect <- asv_clean %>%
+  filter(str_detect(sample.id, 'CONI.2')) %>%
+  select(-sample.id) 
+fl_insect <- fl_insect[, colSums(fl_insect) > 0]
+fl_insect <- fl_insect[rowSums(fl_insect) > 0, ]
+
+insect_samples <- nrow(fl_insect) # 63 samples
+insect_seqs <- sum(fl_insect) # 264962 insect sequences
+insect_mean_coverage <- mean(rowSums(fl_insect)) # 4205.746 mean
+insect_std_err_cov <- sd(rowSums(fl_insect) / sqrt(length(rowSums(fl_insect)))) # std error = 1298.698
+insect_asv <- ncol(fl_insect) # 74 ASVs
+total_asv_sample <- apply(fl_insect != 0, MARGIN = 1, FUN = length.which) # number of ASVs per sample
+mean_asv_per_sample <- mean(total_asv_sample)
+stderr_asv_per_sample <- sterr(total_asv_sample)
+
+
+# percentages 
+fl_species <- asv_counts %>%
+  filter(species != "") %>%
+  select(starts_with("CONI.2"))
+
+fl_species <- fl_species[, colSums(fl_species) > 0]
+fl_species <- fl_species[rowSums(fl_species) > 0, ]
+n_species <- nrow(fl_species) # 61 assigned to species
+pct_species <- (nrow(fl_species) / ncol(fl_insect))*100 # 32%
+
+fl_genus <- asv_counts %>%
+  filter(genus != "") %>%
+  select(starts_with("CONI.2"))
+fl_genus <- fl_genus[, colSums(fl_genus) > 0]
+fl_genus <- fl_genus[rowSums(fl_genus) > 0, ]
+n_genus <- nrow(fl_genus)
+pct_genus <- (nrow(fl_genus) / ncol(fl_insect))*100
+
+fl_family <- asv_counts %>%
+  filter(family != "") %>%
+  select(starts_with("CONI.2"))
+fl_family <- fl_family[, colSums(fl_family) > 0]
+fl_family <- fl_family[rowSums(fl_family) > 0, ]
+n_family <- nrow(fl_family)
+pct_family <- (nrow(fl_family) / ncol(fl_insect))*100
+
+fl_order <- asv_counts %>%
+  filter(order != "") %>%
+  select(starts_with("CONI.2"))
+fl_order <- fl_order[, colSums(fl_order) > 0]
+fl_order <- fl_order[rowSums(fl_order) > 0, ]
+n_order <- nrow(fl_order)
+pct_order <- (nrow(fl_order) / ncol(fl_insect))*100
+
+summary_stats_fl <- data.frame(
+  total_seq_depth = total_seq_depth, 
+  total_mean_coverage = total_mean_coverage, 
+  total_std_err_cov = total_std_err_cov,
+  insect_seqs = insect_seqs,
+  insect_mean_coverage = insect_mean_coverage,
+  insect_std_err_cov = insect_std_err_cov,
+  total_asv = total_asv, 
+  total_samples = total_samples, 
+  insect_asv = insect_asv,
+  insect_samples = insect_samples,
+  mean_asv_per_sample = mean_asv_per_sample,
+  stderr_asv_per_sample = stderr_asv_per_sample,
+  n_species = n_species,
+  pct_species = pct_species,
+  n_genus = n_genus,
+  pct_genus = pct_genus,
+  n_family = n_family,
+  pct_family = pct_family,
+  n_order = n_order,
+  pct_order = pct_order
+  )
+
+```
+
+## Table with summary statistics
+```{r}
+options(scipen = 999)
+summary_stats <- as.data.frame(t(rbind((summary_stats_all),
+                         (summary_stats_fl),
+                         (summary_stats_arg))))
+colnames(summary_stats) <- c("Total", "Citrus WMA", "Santa Maria")
+
+write.csv(summary_stats, "../output/sequencing_summary.csv")
+```
+
+## Significant Difference tests
+```{r}
+
+# Mean coverage higher for FL than ARG
+hist(colSums(fl_seqs))
+hist(colSums(arg_seqs))
+wilcox.test(colSums(fl_seqs), colSums(arg_seqs))
+
+```
+
+# Richness (raw)
+
+## Mean # of ASVs per sample 
+```{r}
+# total ASV in Citrus
+asv_clean_citrus <- asv_clean %>%
+  filter(grepl("CONI.2", sample.id)) %>%
+  select(1:174) %>% # remove metadata
+  select_if(function(x) sum(x) != 0) # remove columns with no reads
+
+# total asv in RSM
+asv_clean_rsm <- asv_clean %>%
+  filter(grepl("CONI-R", sample.id)) %>%
+  select(1:174) %>% # remove metadata
+  select_if(function(x) sum(x) != 0) # remove columns with no reads
+
+
+# how many asv per row != 0? 
+sum_asv <- apply(asv_clean[, -1] != 0, MARGIN = 1, FUN = length.which)
+
+# assign to sample
+asv_per_sample <- data.frame(
+  sample.id = asv_clean$sample.id, 
+  n.asv = sum_asv)
+asv_per_sample$source <- ifelse(grepl("CONI.2", asv_clean$sample.id), 
+                         "Citrus", "RSM")
+
+# final summary
+all_asv <- data.frame(
+  total_asv = length(names(asv_clean))-1,
+  mean_asv = mean(asv_per_sample$n.asv),
+  sterr_asv = sterr(asv_per_sample$n.asv),
+  min_asv = min(asv_per_sample$n.asv),
+  max_asv = max(asv_per_sample$n.asv)
+)
+
+citrus_asv <- data.frame(
+  total_asv = length(names(asv_clean_citrus)),
+  mean_asv = mean((asv_per_sample %>%
+       filter(source == "Citrus"))$n.asv),
+  sterr_asv = sterr((asv_per_sample %>%
+       filter(source == "Citrus"))$n.asv),
+  min_asv = min((asv_per_sample %>%
+       filter(source == "Citrus"))$n.asv),
+  max_asv = max((asv_per_sample %>%
+       filter(source == "Citrus"))$n.asv)
+)
+
+rsm_asv <- data.frame(
+  total_asv = length(names(asv_clean_rsm)),
+  mean_asv = mean((asv_per_sample %>%
+       filter(source == "RSM"))$n.asv),
+  sterr_asv = sterr((asv_per_sample %>%
+       filter(source == "RSM"))$n.asv),
+  min_asv = min((asv_per_sample %>%
+       filter(source == "RSM"))$n.asv),
+  max_asv = max((asv_per_sample %>%
+       filter(source == "RSM"))$n.asv)
+)
+
+final_asv <- rbind(all_asv, citrus_asv, rsm_asv)
+rownames(final_asv) <- c("all", "citrus", "rsm")
+
+
+# how many ASVs per row that doesn't sum to 0? 
+mean_asv <- apply(asv_clean[, -1] != 0, MARGIN = 1, FUN = length.which)
+
+# assign to sample
+mean_asv <- data.frame(
+  sample.id = asv_clean$sample.id, 
+  mean.asv = mean_asv)
+
+# add metadata
+metadata_mean_asv <- right_join(metadata_asv_clean, mean_asv, by = "sample.id")
+metadata_mean_asv <- filter(metadata_mean_asv, 
+                            source != "Eglin" & source.year != "RSM-0")
+metadata_mean_asv_citrus_1 <- filter(metadata_mean_asv, source.year == "Citrus-1")
+metadata_mean_asv_citrus_2 <- filter(metadata_mean_asv, source.year == "Citrus-2")
+metadata_mean_asv_rsm_1 <- filter(metadata_mean_asv, source.year == "RSM-1")
+metadata_mean_asv_rsm_2 <- filter(metadata_mean_asv, source.year == "RSM-2")
+
+
+# before comparing the means of each sample type, test for normality
+ggqqplot(metadata_mean_asv$mean.asv) # not normal
+shapiro.test(metadata_mean_asv$mean.asv) # not normal
+
+# summary based on site and year
+asv_mean_stats <- metadata_mean_asv %>%
+  group_by(source.year) %>%
+  dplyr::summarise(n_asv = n(),
+            mean_asv = mean(mean.asv, na.rm = TRUE),
+            se_asv = sterr(mean.asv))
+
+write.csv(asv_mean_stats, "../output/mean_asv_stats.csv", row.names = F)
+
+
+# pairwise Wilcoxon test to determine which family is diff
+asv_wilcox <- pairwise.wilcox.test(metadata_mean_asv$mean.asv, metadata_mean_asv$source.year,
+                     p.adjust.method = "BH")
+asv_wilcox
+# sig diff between RSM-1 and Citrus-2
+
+write.csv(asv_wilcox[["p.value"]], "../output/asv_wilcox.csv", row.names = T)
+
+# graph data
+mean_asv_plot <- ggplot(metadata_mean_asv, aes(x=source.year, y=mean.asv)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "Mean # ASVs") +
+  scale_y_continuous(limits = c(0, 20), breaks = c(0,5,10,15,20)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank())+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))
+
+mean_asv_plot
+# outliers: 
+## Citrus-1: 4 and 5 ASVs
+## Citrus-2: 14 ASVs
+## RSM-1: 17 ASVS
+## RSM-2: 19 ASVs
+
+
+```
+
+## Mean # of species per sample 
+```{r}
+# total ASV in Citrus
+species_clean_citrus <- species_clean %>%
+  filter(grepl("CONI.2", sample.id)) %>%
+  select(-sample.id) %>%
+  select_if(function(x) sum(x) != 0) # remove columns with no reads
+
+# total asv in RSM
+species_clean_rsm <- species_clean %>%
+  filter(grepl("CONI.R", sample.id)) %>%
+  select(-sample.id) %>%
+  select_if(function(x) sum(x) != 0) # remove columns with no reads
+
+
+# how many asv per row != 0? 
+sum_species <- apply(species_clean[, -1] != 0, MARGIN = 1, FUN = length.which)
+
+# assign to sample
+species_per_sample <- data.frame(
+  sample.id = species_clean$sample.id, 
+  n.species = sum_species)
+species_per_sample$source <- ifelse(grepl("CONI-2", species_clean$sample.id), 
+                         "Citrus", "RSM")
+
+# final summary
+all_species <- data.frame(
+  total_species = length(names(species_clean))-1,
+  mean_species = mean(species_per_sample$n.species),
+  sterr_species = sterr(species_per_sample$n.species),
+  min_species = min(species_per_sample$n.species),
+  max_species = max(species_per_sample$n.species)
+)
+
+citrus_species <- data.frame(
+  total_species = length(names(species_clean_citrus)),
+  mean_species = mean((species_per_sample %>%
+       filter(source == "Citrus"))$n.species),
+  sterr_species = sterr((species_per_sample %>%
+       filter(source == "Citrus"))$n.species),
+  min_species = min((species_per_sample %>%
+       filter(source == "Citrus"))$n.species),
+  max_species = max((species_per_sample %>%
+       filter(source == "Citrus"))$n.species)
+)
+
+rsm_species <- data.frame(
+  total_species = length(names(species_clean_rsm)),
+  mean_species = mean((species_per_sample %>%
+       filter(source == "RSM"))$n.species),
+  sterr_species = sterr((species_per_sample %>%
+       filter(source == "RSM"))$n.species),
+  min_species = min((species_per_sample %>%
+       filter(source == "RSM"))$n.species),
+  max_species = max((species_per_sample %>%
+       filter(source == "RSM"))$n.species)
+)
+
+final_species <- rbind(all_species, citrus_species, rsm_species)
+rownames(final_species) <- c("all", "citrus", "rsm")
+
+
+# how many speciess per row that doesn't sum to 0? 
+mean_species <- apply(species_clean[, -1] != 0, MARGIN = 1, FUN = length.which)
+
+# assign to sample
+mean_species <- data.frame(
+  sample.id = species_clean$sample.id, 
+  mean.species = mean_species)
+
+# add metadata
+metadata_mean_species <- right_join(metadata_species_clean, mean_species, by = "sample.id")
+metadata_mean_species <- filter(metadata_mean_species, 
+                            source != "Eglin" & source.year != "RSM-0")
+metadata_mean_species_citrus_1 <- filter(metadata_mean_species, source.year == "Citrus-1")
+metadata_mean_species_citrus_2 <- filter(metadata_mean_species, source.year == "Citrus-2")
+metadata_mean_species_rsm_1 <- filter(metadata_mean_species, source.year == "RSM-1")
+metadata_mean_species_rsm_2 <- filter(metadata_mean_species, source.year == "RSM-2")
+
+
+# before comparing the means of each sample type, test for normality
+ggqqplot(metadata_mean_species$mean.species) # not normal
+shapiro.test(metadata_mean_species$mean.species) # not normal
+
+# summary based on site and year
+species_mean_stats <- metadata_mean_species %>%
+  group_by(source.year) %>%
+  dplyr::summarise(n_species = n(),
+            mean_species = mean(mean.species, na.rm = TRUE),
+            se_species = sterr(mean.species))
+
+write.csv(species_mean_stats, "../output/mean_species_stats.csv", row.names = F)
+
+
+# pairwise Wilcoxon test to determine which family is diff
+species_wilcox <- pairwise.wilcox.test(metadata_mean_species$mean.species, metadata_mean_species$source.year,
+                     p.adjust.method = "BH")
+species_wilcox
+# sig diff between RSM-1 and Citrus-2
+
+write.csv(species_wilcox[["p.value"]], "../output/species_wilcox.csv", row.names = T)
+
+# graph data
+mean_species_plot <- ggplot(metadata_mean_species, aes(x=source.year, y=mean.species)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "Mean # speciess") +
+  scale_y_continuous(limits = c(0, 20), breaks = c(0,5,10,15,20)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank())+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))
+
+mean_species_plot
+
+
+
+```
+
+## Mean # of families per sample
+```{r}
+
+# total Families in Citrus
+families_clean_citrus <- families_clean %>%
+  filter(grepl("CONI.2", sample.id)) %>%
+  select(-sample.id) %>%
+  select_if(function(x) sum(x) != 0) # remove columns with no reads
+
+# total families in RSM
+families_clean_rsm <- families_clean %>%
+  filter(grepl("CONI.R", sample.id)) %>%
+  select(-sample.id) %>%
+  select_if(function(x) sum(x) != 0) # remove columns with no reads
+
+
+# how many families per row != 0? 
+sum_families <- apply(families_clean[, -1] != 0, MARGIN = 1, FUN = length.which)
+
+# assign to sample
+families_per_sample <- data.frame(
+  sample.id = families_clean$sample.id, 
+  n.families = sum_families)
+families_per_sample$source <- ifelse(grepl("CONI.2", families_clean$sample.id), 
+                         "Citrus", "RSM")
+
+# final summary
+all_families <- data.frame(
+  total_fam = length(names(families_clean))-1,
+  mean_fam = mean(families_per_sample$n.families),
+  sterr_fam = sterr(families_per_sample$n.families),
+  min_fam = min(families_per_sample$n.families),
+  max_fam = max(families_per_sample$n.families)
+)
+
+citrus_families <- data.frame(
+  total_fam = length(names(families_clean_citrus)),
+  mean_fam = mean((families_per_sample %>%
+       filter(source == "Citrus"))$n.families),
+  sterr_fam = sterr((families_per_sample %>%
+       filter(source == "Citrus"))$n.families),
+  min_fam = min((families_per_sample %>%
+       filter(source == "Citrus"))$n.families),
+  max_fam = max((families_per_sample %>%
+       filter(source == "Citrus"))$n.families)
+)
+
+rsm_families <- data.frame(
+  total_fam = length(names(families_clean_rsm)),
+  mean_fam = mean((families_per_sample %>%
+       filter(source == "RSM"))$n.families),
+  sterr_fam = sterr((families_per_sample %>%
+       filter(source == "RSM"))$n.families),
+  min_fam = min((families_per_sample %>%
+       filter(source == "RSM"))$n.families),
+  max_fam = max((families_per_sample %>%
+       filter(source == "RSM"))$n.families)
+)
+
+final_families <- rbind(all_families, citrus_families, rsm_families)
+rownames(final_families) <- c("all", "citrus", "rsm")
+
+
+
+# how many families per row != 0? 
+mean_families <- apply(families_clean[, -29] != 0, MARGIN = 1, FUN = length.which)
+mean_families <- mean_families[mean_families != 0]
+
+# assign to sample
+mean_families_df <- data.frame(
+  sample.id = families_clean[rowSums(families_clean[,-29]) != 0,]$sample.id, 
+  mean.families = mean_families)
+
+# add metadata
+metadata_mean_families <- right_join(metadata_families_clean, mean_families_df, by = "sample.id")
+metadata_mean_families <- filter(metadata_mean_families, 
+                               source != "Eglin" & source.year != "RSM-0")
+metadata_mean_families_citrus_1 <- filter(metadata_mean_families, source.year == "Citrus-1")
+metadata_mean_families_citrus_2 <- filter(metadata_mean_families, source.year == "Citrus-2")
+metadata_mean_families_rsm_1 <- filter(metadata_mean_families, source.year == "RSM-1")
+metadata_mean_families_rsm_2 <- filter(metadata_mean_families, source.year == "RSM-2")
+
+
+# before comparing the means of each sample type, test for normality
+ggqqplot(metadata_mean_families$mean.families) # not normal
+shapiro.test(metadata_mean_families$mean.families) # not normal
+
+# mean
+mean(metadata_mean_families$mean.families) # 2.35
+
+# standard error
+sterr(metadata_mean_families$mean.families) # .27
+
+# summary based on site and year
+families_mean_stats <- metadata_mean_families %>%
+  group_by(source.year) %>%
+  dplyr::summarise(n_families = n(),
+            mean_families = mean(mean.families, na.rm = TRUE),
+            se_families = sterr(mean.families))
+
+
+# pairwise Wilcoxon test to determine which family is diff
+families_wilcox <- pairwise.wilcox.test(metadata_mean_families$mean.families, metadata_mean_families$source.year,
+                     p.adjust.method = "BH")
+families_wilcox
+# sig diff
+
+write.csv(families_wilcox[["p.value"]], "../output/families_wilcox.csv", row.names = T)
+
+# graph data
+mean_families_plot <- ggplot(metadata_mean_families, aes(x=source.year, y=mean.families)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "Mean # families") +
+  scale_y_continuous(limits = c(0, 10)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank())+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))
+
+mean_families_plot
+
+```
+
+
+## Mean # of orders per sample
+```{r}
+# total orders in Citrus
+orders_clean_citrus <- orders_clean %>%
+  filter(grepl("CONI.2", sample.id)) %>%
+  select(-sample.id) %>%
+  select_if(function(x) sum(x) != 0) # remove columns with no reads
+
+# total orders in RSM
+orders_clean_rsm <- orders_clean %>%
+  filter(grepl("CONI.R", sample.id)) %>%
+  select(-sample.id) %>%
+  select_if(function(x) sum(x) != 0) # remove columns with no reads
+
+
+# how many orders per row != 0? 
+sum_orders <- apply(orders_clean[, -1] != 0, MARGIN = 1, FUN = length.which)
+
+# assign to sample
+orders_per_sample <- data.frame(
+  sample.id = orders_clean$sample.id, 
+  n.orders = sum_orders)
+orders_per_sample$source <- ifelse(grepl("CONI.2", orders_clean$sample.id), 
+                         "Citrus", "RSM")
+
+# mean
+all_orders <- data.frame(
+  total_ord = length(names(orders_clean))-1,
+  mean_ord = mean(orders_per_sample$n.orders),
+  sterr_ord = sterr(orders_per_sample$n.orders),
+  min_ord = min(orders_per_sample$n.orders),
+  max_ord = max(orders_per_sample$n.orders)
+)
+
+citrus_orders <- data.frame(
+  total_ord = length(names(orders_clean_citrus)),
+  mean_ord = mean((orders_per_sample %>%
+       filter(source == "Citrus"))$n.orders),
+  sterr_ord = sterr((orders_per_sample %>%
+       filter(source == "Citrus"))$n.order),
+  min_ord = min((orders_per_sample %>%
+       filter(source == "Citrus"))$n.order),
+  max_ord = max((orders_per_sample %>%
+       filter(source == "Citrus"))$n.order)
+)
+
+rsm_orders <- data.frame(
+  total_ord = length(names(orders_clean_rsm)),
+  mean_ord = mean((orders_per_sample %>%
+       filter(source == "RSM"))$n.orders),
+  sterr_ord = sterr((orders_per_sample %>%
+       filter(source == "RSM"))$n.order),
+  min_ord = min((orders_per_sample %>%
+       filter(source == "RSM"))$n.order),
+  max_ord = max((orders_per_sample %>%
+       filter(source == "RSM"))$n.order)
+)
+
+final_orders <- rbind(all_orders, citrus_orders, rsm_orders)
+rownames(final_orders) <- c("all", "citrus", "rsm")
+
+# how many orders per row != 0? 
+mean_orders <- apply(orders_clean[, -12] != 0, MARGIN = 1, FUN = length.which)
+mean_orders <- mean_orders[mean_orders != 0]
+
+# assign to sample
+mean_orders_df <- data.frame(
+  sample.id = orders_clean[rowSums(orders_clean[,-12]) != 0,]$sample.id, 
+  mean.orders = mean_orders)
+
+# add metadata
+metadata_mean_orders <- right_join(metadata_orders_clean, mean_orders_df, by = "sample.id")
+metadata_mean_orders <- filter(metadata_mean_orders, 
+                               source != "Eglin" & source.year != "RSM-0")
+metadata_mean_orders_citrus_1 <- filter(metadata_mean_orders, source.year == "Citrus-1")
+metadata_mean_orders_citrus_2 <- filter(metadata_mean_orders, source.year == "Citrus-2")
+metadata_mean_orders_rsm_1 <- filter(metadata_mean_orders, source.year == "RSM-1")
+metadata_mean_orders_rsm_2 <- filter(metadata_mean_orders, source.year == "RSM-2")
+
+
+# before comparing the means of each sample type, test for normality
+ggqqplot(metadata_mean_orders$mean.orders) # not normal
+shapiro.test(metadata_mean_orders$mean.orders) # not normal
+
+# mean
+mean(metadata_mean_orders$mean.orders) # 2.35
+
+# standard error
+sterr(metadata_mean_orders$mean.orders) # .27
+
+# summary based on site and year
+orders_mean_stats <- metadata_mean_orders %>%
+  group_by(source.year) %>%
+  dplyr::summarise(n_orders = n(),
+            mean_orders = mean(mean.orders, na.rm = TRUE),
+            se_orders = sterr(mean.orders))
+
+
+# pairwise Wilcoxon test to determine which family is diff
+orders_wilcox <- pairwise.wilcox.test(metadata_mean_orders$mean.orders, metadata_mean_orders$source.year,
+                     p.adjust.method = "BH")
+orders_wilcox
+# sig diff
+
+write.csv(orders_wilcox[["p.value"]], "../output/orders_wilcox.csv", row.names = T)
+
+# graph data
+mean_orders_plot <- ggplot(metadata_mean_orders, aes(x=source.year, y=mean.orders)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "Mean # orders") +
+  scale_y_continuous(limits = c(0, 10)) +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), panel.grid.major = element_blank())+
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=14,face="bold"))
+
+mean_orders_plot
+
+# summary based on site and year
+orders_mean_stats <- metadata_mean_orders %>%
+  group_by(source.year) %>%
+  dplyr::summarise(n_orders = sum(mean.orders),
+            mean_orders = mean(mean.orders, na.rm = TRUE),
+            se_orders = sterr(mean.orders))
+
+write.csv(orders_mean_stats, "../output/mean_orders_stats.csv", row.names = F)
+
+
+```
+
+## Richness Summary
+```{r}
+richness_summary <- (cbind(final_asv, final_families, final_orders))
+write.csv(richness_summary, "../output/richness_summary.csv")
+#richness_summary <- read.csv("tables/richness_summary.csv")
+
+#### SPECIES ####
+species_report <- asv_counts %>%
+  group_by(species) %>%
+  dplyr::summarise(across(starts_with("CONI"), ~sum(., na.rm = TRUE)))
+# get totals of each species for citrus
+species_report$foo.citrus <- apply(species_report[, grepl("^CONI.2", names(species_report))], 1, function(x) sum(x > 0))
+# get totals of each species for rsm
+species_report$foo.rsm <- apply(species_report[, grepl("^CONI.R", names(species_report))], 1, function(x) sum(x > 0))
+# keep only totals, get rid of first row which is blank
+species_report <- species_report[-1,c(1,65,66)]
+
+
+#### GENUS ####
+genus_report <- asv_counts %>%
+  group_by(genus) %>%
+  dplyr::summarise(across(starts_with("CONI"), ~sum(., na.rm = TRUE)))
+
+genus_report$foo.citrus <- apply(genus_report[, grepl("^CONI.2", names(genus_report))], 1, function(x) sum(x > 0))
+
+genus_report$foo.rsm <- apply(genus_report[, grepl("^CONI.R", names(genus_report))], 1, function(x) sum(x > 0))
+
+genus_report <- genus_report[-1,c(1,65,66)]
+
+
+#### FAMILY ####
+family_report <- asv_counts %>%
+  group_by(family) %>%
+  dplyr::summarise(across(starts_with("CONI"), ~sum(., na.rm = TRUE)))
+
+family_report$foo.citrus <- apply(family_report[, grepl("^CONI.2", names(family_report))], 1, function(x) sum(x > 0))
+
+family_report$foo.rsm <- apply(family_report[, grepl("^CONI.R", names(family_report))], 1, function(x) sum(x > 0))
+
+family_report <- family_report[-1,c(1,65,66)]
+
+
+#### ORDER ####
+order_report <- asv_counts %>%
+  group_by(order) %>%
+  dplyr::summarise(across(starts_with("CONI"), ~sum(., na.rm = TRUE)))
+
+order_report$foo.citrus <- apply(order_report[, grepl("^CONI.2", names(order_report))], 1, function(x) sum(x > 0))
+
+order_report$foo.rsm <- apply(order_report[, grepl("^CONI.R", names(order_report))], 1, function(x) sum(x > 0))
+
+order_report <- order_report[,c(1,65,66)]
+
+# merge with dataframe containing all asv
+all_taxa <- read.csv("../data/all_taxa.csv")
+
+all_taxa_species <- all_taxa %>%
+  right_join(species_report) %>%
+  unique() # get rid of duplicates
+
+all_taxa_genus <- all_taxa %>%
+  right_join(genus_report) %>%
+  mutate(species = "") %>% # make species column blank
+  unique() # get rid of duplicates
+
+all_taxa_family <- all_taxa %>%
+  right_join(family_report) %>%
+  mutate(species = "", genus = "") %>% # make species column blank
+  unique() # get rid of duplicates
+
+all_taxa_order <- all_taxa %>%
+  right_join(order_report) %>%
+  mutate(species = "", genus = "", family = "") %>% # make species column blank
+  unique() # get rid of duplicates
+
+# combine all into one dataframe
+all_taxa_foo <- arrange(
+  rbind(all_taxa_order, all_taxa_family, all_taxa_genus, all_taxa_species),
+  order, family, genus, species)
+
+
+# write
+write_csv(all_taxa_foo, "../output/diet_report.csv")
+
+
+```
+
+
+# Diversity
+
+For all diversity calculations, I will use the integrated four-step procedure proposed by Chao et al. 2020: https://github.com/AnneChao/iNEXT.4steps
+1. Assessment of sample completeness profile
+2. Size-based rarefaction and extrapolation analysis and the asymptotic diversity profile for 0 ≤ q ≤ 2
+3. Non-asymptotic coverage-based rarefaction and extrapolation analysis for orders q = 0, 1 and 2
+4. An evenness profile
+
+## Clean vs. Unclean
+
+First, calculate diversity for clean vs. unclean samples to determine if removing any samples is necessary. 
+
+### Abundance-based
+
+Citrus
+
+```{r}
+
+#### Prepare Data Frames ####
+
+# aggregate Citrus samples
+order_fl_clean <- metadata_orders_clean %>%
+  filter(clean == "y" & source == "Citrus") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+order_fl_1 <- as.matrix(apply(order_fl_clean,2,as.numeric))
+# b) use your species names as row names
+row.names(order_fl_1) <- rownames(order_fl_clean)
+
+
+order_fl_unclean <- metadata_orders_clean %>%
+  filter(clean == "n" & source == "Citrus") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+order_fl_2 <- as.matrix(apply(order_fl_unclean,2,as.numeric))
+# b) use your species names as row names
+row.names(order_fl_2) <- rownames(order_fl_unclean)
+
+# Combine into one list (for abundance-based at individual level)
+clean.unclean.fl <- list(Clean = order_fl_1, Unclean = order_fl_2)
+
+#### Run iNEXT 3D ####
+clean.unclean.3d.fl <- iNEXTbeta3D(clean.unclean.fl, q = c(0, 1, 2), 
+                                      diversity = "TD",
+                                      datatype = "abundance",
+                                      nboot = 50, conf = 0.95)
+
+
+ggiNEXTbeta3D(clean.unclean.3d.fl, type = 'B')
+
+
+#### Sample Completeness Profile ####
+
+
+#### Standardize by completeness ####
+# Rarefaction curves go to 100% completeness, so I can estimate at that level.
+
+# Extract estimates of each diversity value
+diversity_fl_alpha <- as.data.frame(rbind(clean.unclean.3d.fl$Clean$alpha, 
+                                   clean.unclean.3d.fl$Unclean$alpha))
+diversity_fl_gamma <- as.data.frame(rbind(clean.unclean.3d.fl$Clean$gamma, 
+                                   clean.unclean.3d.fl$Unclean$gamma))
+diversity_fl_beta <- as.data.frame(rbind(clean.unclean.3d.fl$Clean$beta, 
+                                   clean.unclean.3d.fl$Unclean$beta))
+
+# Alpha values:
+alpha_fl <- 
+rbind(
+diversity_fl_alpha %>%
+  filter(Dataset == "Clean" & Order.q == 0 & SC == 1),
+diversity_fl_alpha %>%
+  filter(Dataset == "Clean" & Order.q == 1 & SC == 1),
+diversity_fl_alpha %>%
+  filter(Dataset == "Clean" & Order.q == 2 & SC == 1),
+diversity_fl_alpha %>%
+  filter(Dataset == "Unclean" & Order.q == 0 & SC == 1),
+diversity_fl_alpha %>%
+  filter(Dataset == "Unclean" & Order.q == 1 & SC == 1),
+diversity_fl_alpha %>%
+  filter(Dataset == "Unclean" & Order.q == 2 & SC == 1)
+)
+names(alpha_fl) <- c("Site", "q_level", "SC", "Size", "Diversity_a", 
+                      "Method_a", "s.e._a", "LCL_a", "UCL_a", "Type")
+alpha_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Beta values:
+beta_fl <- 
+rbind(
+diversity_fl_beta %>%
+  filter(Dataset == "Clean" & Order.q == 0 & SC == 1),
+diversity_fl_beta %>%
+  filter(Dataset == "Clean" & Order.q == 1 & SC == 1),
+diversity_fl_beta %>%
+  filter(Dataset == "Clean" & Order.q == 2 & SC == 1),
+diversity_fl_beta %>%
+  filter(Dataset == "Unclean" & Order.q == 0 & SC == 1),
+diversity_fl_beta %>%
+  filter(Dataset == "Unclean" & Order.q == 1 & SC == 1),
+diversity_fl_beta %>%
+  filter(Dataset == "Unclean" & Order.q == 2 & SC == 1)
+)
+names(beta_fl) <- c("Site", "q_level", "SC", "Size", "Diversity_b", 
+                      "Method_b", "s.e._b", "LCL_b", "UCL_b", "Type")
+beta_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Gamma values:
+gamma_fl <- 
+rbind(
+diversity_fl_gamma %>%
+  filter(Dataset == "Clean" & Order.q == 0 & SC == 1),
+diversity_fl_gamma %>%
+  filter(Dataset == "Clean" & Order.q == 1 & SC == 1),
+diversity_fl_gamma %>%
+  filter(Dataset == "Clean" & Order.q == 2 & SC == 1),
+diversity_fl_gamma %>%
+  filter(Dataset == "Unclean" & Order.q == 0 & SC == 1),
+diversity_fl_gamma %>%
+  filter(Dataset == "Unclean" & Order.q == 1 & SC == 1),
+diversity_fl_gamma %>%
+  filter(Dataset == "Unclean" & Order.q == 2 & SC == 1)
+)
+names(gamma_fl) <- c("Site", "q_level", "SC", "Size", "Diversity_g", 
+                      "Method_g", "s.e._g", "LCL_g", "UCL_g", "Type")
+gamma_fl$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+diversity_df_fl <- alpha_fl %>%
+  full_join(beta_fl) %>%
+  full_join(gamma_fl)
+
+
+```
+
+RSM
+
+```{r}
+
+#### Prepare Data Frames ####
+
+# aggregate Citrus samples
+order_arg_clean <- metadata_orders_clean %>%
+  filter(clean == "y" & source == "RSM") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+order_arg_1 <- as.matrix(apply(order_arg_clean,2,as.numeric))
+# b) use your species names as row names
+row.names(order_arg_1) <- rownames(order_arg_clean)
+
+
+order_arg_unclean <- metadata_orders_clean %>%
+  filter(clean == "n" & source == "RSM") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+order_arg_2 <- as.matrix(apply(order_arg_unclean,2,as.numeric))
+# b) use your species names as row names
+row.names(order_arg_2) <- rownames(order_arg_unclean)
+
+# Combine into one list (for abundance-based at individual level)
+clean.unclean.arg <- list(Clean = order_arg_1, Unclean = order_arg_2)
+
+#### Run iNEXT 3D ####
+clean.unclean.3d.arg <- iNEXTbeta3D(clean.unclean.arg, q = c(0, 1, 2), 
+                                      diversity = "TD",
+                                      datatype = "abundance",
+                                      nboot = 50, conf = 0.95)
+
+
+ggiNEXTbeta3D(clean.unclean.3d.arg, type = 'B')
+
+
+#### Sample Completeness Profile ####
+
+
+#### Standardize by completeness ####
+# Rarefaction curves go to 100% completeness, so I can estimate at that level.
+
+# Extract estimates of each diversity value
+diversity_arg_alpha <- as.data.frame(rbind(clean.unclean.3d.arg$Clean$alpha, 
+                                   clean.unclean.3d.arg$Unclean$alpha))
+diversity_arg_gamma <- as.data.frame(rbind(clean.unclean.3d.arg$Clean$gamma, 
+                                   clean.unclean.3d.arg$Unclean$gamma))
+diversity_arg_beta <- as.data.frame(rbind(clean.unclean.3d.arg$Clean$beta, 
+                                   clean.unclean.3d.arg$Unclean$beta))
+
+# Alpha values:
+alpha_arg <- 
+rbind(
+diversity_arg_alpha %>%
+  filter(Dataset == "Clean" & Order.q == 0 & SC == 1),
+diversity_arg_alpha %>%
+  filter(Dataset == "Clean" & Order.q == 1 & SC == 1),
+diversity_arg_alpha %>%
+  filter(Dataset == "Clean" & Order.q == 2 & SC == 1),
+diversity_arg_alpha %>%
+  filter(Dataset == "Unclean" & Order.q == 0 & SC == 1),
+diversity_arg_alpha %>%
+  filter(Dataset == "Unclean" & Order.q == 1 & SC == 1),
+diversity_arg_alpha %>%
+  filter(Dataset == "Unclean" & Order.q == 2 & SC == 1)
+)
+names(alpha_arg) <- c("Site", "q_level", "SC", "Size", "Diversity_a", 
+                      "Method_a", "s.e._a", "LCL_a", "UCL_a", "Type")
+alpha_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Beta values:
+beta_arg <- 
+rbind(
+diversity_arg_beta %>%
+  filter(Dataset == "Clean" & Order.q == 0 & SC == 1),
+diversity_arg_beta %>%
+  filter(Dataset == "Clean" & Order.q == 1 & SC == 1),
+diversity_arg_beta %>%
+  filter(Dataset == "Clean" & Order.q == 2 & SC == 1),
+diversity_arg_beta %>%
+  filter(Dataset == "Unclean" & Order.q == 0 & SC == 1),
+diversity_arg_beta %>%
+  filter(Dataset == "Unclean" & Order.q == 1 & SC == 1),
+diversity_arg_beta %>%
+  filter(Dataset == "Unclean" & Order.q == 2 & SC == 1)
+)
+names(beta_arg) <- c("Site", "q_level", "SC", "Size", "Diversity_b", 
+                      "Method_b", "s.e._b", "LCL_b", "UCL_b", "Type")
+beta_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Gamma values:
+gamma_arg <- 
+rbind(
+diversity_arg_gamma %>%
+  filter(Dataset == "Clean" & Order.q == 0 & SC == 1),
+diversity_arg_gamma %>%
+  filter(Dataset == "Clean" & Order.q == 1 & SC == 1),
+diversity_arg_gamma %>%
+  filter(Dataset == "Clean" & Order.q == 2 & SC == 1),
+diversity_arg_gamma %>%
+  filter(Dataset == "Unclean" & Order.q == 0 & SC == 1),
+diversity_arg_gamma %>%
+  filter(Dataset == "Unclean" & Order.q == 1 & SC == 1),
+diversity_arg_gamma %>%
+  filter(Dataset == "Unclean" & Order.q == 2 & SC == 1)
+)
+names(gamma_arg) <- c("Site", "q_level", "SC", "Size", "Diversity_g", 
+                      "Method_g", "s.e._g", "LCL_g", "UCL_g", "Type")
+gamma_arg$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+diversity_df_arg <- alpha_arg %>%
+  full_join(beta_arg) %>%
+  full_join(gamma_arg)
+
+
+```
+
+
+
+### Incidence-based
+
+```{r}
+
+# convert abundance to presence-absence
+order_fl_1_inc <- ifelse(order_fl_1 > 0, 1, 0)
+order_fl_2_inc <- ifelse(order_fl_2 > 0, 1, 0)
+order_arg_1_inc <- ifelse(order_arg_1 > 0, 1, 0)
+order_arg_2_inc <- ifelse(order_arg_2 > 0, 1, 0)
+
+clean.unclean.fl.inc <- list(Clean = order_fl_1_inc, Unclean = order_fl_2_inc)
+clean.unclean.arg.inc <- list(Clean = order_arg_1_inc, Unclean = order_arg_2_inc)
+
+#### Citrus ####
+clean.unclean.3d.fl.inc <- iNEXT4steps(data = clean.unclean.fl.inc, 
+                                       datatype = "incidence_raw",
+                                       nboot = 50)
+#### RSM ####
+clean.unclean.3d.arg.inc <- iNEXT4steps(data = clean.unclean.arg.inc, 
+                                       datatype = "incidence_raw",
+                                       nboot = 50)
+
+#### Estimate Diversity ####
+clean.unclean.div.fl <- estimateD(clean.unclean.fl.inc, 
+                                  datatype = "incidence_raw", base = "coverage")
+clean.unclean.div.arg <- estimateD(clean.unclean.arg.inc, 
+                                  datatype = "incidence_raw", base = "coverage")
+
+```
+
+
+### Plot
+
+Abundance:
+
+```{r}
+
+plotdat_fl_diversity <- data.frame(
+  Clean = c(diversity_df_fl$Site, diversity_df_fl$Site, diversity_df_fl$Site),
+  Precision = rep("Order", 18),
+  q = c(diversity_df_fl$q_level, diversity_df_fl$q_level, diversity_df_fl$q_level),
+  Type = c(rep("Alpha", 6), rep("Beta", 6), rep("Gamma", 6)),
+  Diversity =  c(diversity_df_fl$Diversity_a, diversity_df_fl$Diversity_b,
+                 diversity_df_fl$Diversity_g),
+  SE =  c(diversity_df_fl$s.e._a, diversity_df_fl$s.e._b,
+          diversity_df_fl$s.e._g),
+  LCL = c(diversity_df_fl$LCL_a, diversity_df_fl$LCL_b,
+          diversity_df_fl$LCL_g),
+  UCL = c(diversity_df_fl$UCL_a, diversity_df_fl$UCL_b,
+          diversity_df_fl$UCL_g),
+  Site = "Citrus"
+)%>%
+  filter(q != "Simpson") # not enough data to calculate
+
+plotdat_arg_diversity <- data.frame(
+  Clean = c(diversity_df_arg$Site, diversity_df_arg$Site, diversity_df_arg$Site),
+  Precision = rep("Order", 18),
+  q = c(diversity_df_arg$q_level, diversity_df_arg$q_level, diversity_df_arg$q_level),
+  Type = c(rep("Alpha", 6), rep("Beta", 6), rep("Gamma", 6)),
+  Diversity =  c(diversity_df_arg$Diversity_a, diversity_df_arg$Diversity_b,
+                 diversity_df_arg$Diversity_g),
+  SE =  c(diversity_df_arg$s.e._a, diversity_df_arg$s.e._b,
+          diversity_df_arg$s.e._g),
+  LCL = c(diversity_df_arg$LCL_a, diversity_df_arg$LCL_b,
+          diversity_df_arg$LCL_g),
+  UCL = c(diversity_df_arg$UCL_a, diversity_df_arg$UCL_b,
+          diversity_df_arg$UCL_g),
+  Site = "Santa Maria"
+)%>%
+  filter(q != "Simpson") # not enough data to calculate
+
+
+plotdat_clean_diversity <- rbind(plotdat_fl_diversity, plotdat_arg_diversity)
+# write to csv
+write.csv(plotdat_clean_diversity, row.names = F, "../output/abundance_diversity_clean_unclean.csv")
+
+# Alpha
+alpha.plot.clean <- ggplotGrob(
+ggplot(data = plotdat_clean_diversity[plotdat_clean_diversity$Type == "Alpha",]) +
+  geom_point(aes(y = Diversity, x = Site, shape = Clean),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, linetype = Clean,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_y_continuous(limits = c(-1, 6)) +
+  labs(x = NULL, y = "Alpha") +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+      #  axis.text.x = element_blank(),
+      #  axis.ticks.x = element_blank(),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.position = "none"))
+
+# Beta
+beta.plot.clean <- ggplotGrob(
+ggplot(data = plotdat_clean_diversity[plotdat_clean_diversity$Type == "Beta",]) +
+  geom_point(aes(y = Diversity, x = Site, shape = Clean),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, linetype = Clean,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_y_continuous(limits = c(-1, 10)) +
+  labs(x = NULL, y = "Beta") +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+     #   axis.text.x = element_blank(),
+      #  axis.ticks.x = element_blank(),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.position = "none"))
+
+# Gamma
+gamma.plot.clean <- ggplotGrob(
+ggplot(data = plotdat_clean_diversity[plotdat_clean_diversity$Type == "Gamma",]) +
+  geom_point(aes(y = Diversity, x = Site, shape = Clean),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, linetype = Clean,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_y_continuous(limits = c(-1, 15)) +
+  labs(x = NULL, y = "Gamma") +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+      #  axis.text.x = element_blank(),
+      #  axis.ticks.x = element_blank(),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.title = element_blank(),
+        legend.position = c(0.8, 0.8)))
+
+#### Arrange Plots ####
+
+# assign all the same width
+p.clean.unclean <- rbind(alpha.plot.clean, beta.plot.clean, gamma.plot.clean, size = "last")
+
+
+grid.newpage()
+grid.draw(p.clean.unclean)
+
+# write to pdf
+#pdf(file = "figures/Diversity_clean_unclean.pdf", height = 11, width = 8)
+
+grid.newpage()
+grid.draw(p.clean.unclean)
+
+#dev.off()
+```
+
+Add incidence:
+
+```{r}
+
+#### Assemble data ####
+
+plotdat_clean_inc <- data.frame(
+  Type = c(rep("Incidence", 12), rep("Abundance", 12)),
+  q_level = rep(c("Richness", "Shannon", "Simpson"), 8),
+  SC = c(clean.unclean.div.fl$SC, clean.unclean.div.arg$SC,
+         gamma_fl$SC, gamma_arg$SC),
+  Diversity = c(clean.unclean.div.fl$qD, clean.unclean.div.arg$qD,
+         gamma_fl$Diversity_g, gamma_arg$Diversity_g),
+  LCL = c(clean.unclean.div.fl$qD.LCL, clean.unclean.div.arg$qD.LCL,
+         gamma_fl$LCL_g, gamma_arg$LCL_g),
+  UCL = c(clean.unclean.div.fl$qD.UCL, clean.unclean.div.arg$qD.UCL,
+         gamma_fl$UCL_g, gamma_arg$UCL_g),
+  Clean = c(clean.unclean.div.fl$Assemblage, clean.unclean.div.arg$Assemblage,
+         gamma_fl$Site, gamma_arg$Site),
+  Site = c(rep("Citrus", 6), rep("RSM", 6),rep("Citrus", 6), rep("RSM", 6))
+  
+)
+
+# Gamma
+gamma.plot.clean.inc.abun <- ggplotGrob(
+ggplot(data = plotdat_clean_inc) +
+  geom_point(aes(y = Diversity, x = Site, color = Clean, shape = Type),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Clean, linetype = Type,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+ # scale_y_continuous(limits = c(-1, 15)) +
+  labs(x = NULL, y = "Gamma") +
+  facet_grid(~q_level) +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.title = element_blank(),
+        legend.position = c(0.8, 0.8)))
+
+# Export this as a supplementary showing gamma calculations with inc vs abun data
+#pdf("figures/supp_gamma_clean_unclean.pdf", width = 11, height = 8)
+
+grid.draw(gamma.plot.clean.inc.abun)
+
+#dev.off()
+
+# Export incidence vs. abundance table for supplementary
+write.csv(plotdat_clean_inc, row.names = F,
+          "../output/gamma_diversity_clean_unclean.csv")
+```
+
+
+
+## Incidence-based
+
+I will check for sample completeness using Chao 2020 4 step protocol.
+
+NOTE: Two metabarcoding papers I've found use incidence-based approach for sample completeness rather than abundance-based:
+1. https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8190815/
+2. https://www.biorxiv.org/content/10.1101/2023.02.02.526906v1.full
+
+```{r}
+
+# First create a list of 2 matrices to run in iNEXT
+#3 make a matrix from diet_citrus as type "numeric"
+diet_citrus_indiv_order <- metadata_orders_clean %>%
+  filter(source == "Citrus") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+  
+diet1_indiv_order <- as.matrix(apply(diet_citrus_indiv_order,2,as.numeric))
+# b) use your species names as row names
+row.names(diet1_indiv_order) <- rownames(diet_citrus_indiv_order)
+
+## make a matrix from diet_rsm as type "numeric"
+diet_rsm_indiv_order <- metadata_orders_clean %>%
+  filter(source == "RSM") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+  
+diet2_indiv_order <- as.matrix(apply(diet_rsm_indiv_order,2,as.numeric))
+# b) use your species names as row names
+row.names(diet2_indiv_order) <- rownames(diet_rsm_indiv_order)
+
+
+# Now convert abundances to presence/absences
+diet1.inc.order <- ifelse(diet1_indiv_order > 0, 1, 0)
+diet2.inc.order <- ifelse(diet2_indiv_order > 0, 1, 0)
+
+# Combine into one list (for incidence-based)
+diet.diver.inc.order <- list(Citrus = diet1.inc.order, RSM = diet2.inc.order)
+
+
+#### Assessment of sample completeness profile ####
+completeness_prof_inc_order <- iNEXT4steps(diet.diver.inc.order, 
+                                      q = seq(0, 2, 0.2), 
+                                      datatype = "incidence_raw",
+                                      nboot = 50, conf = 0.95)
+
+completeness_prof_inc_order[["figure"]][[1]]
+completeness_prof_inc_order[["summary"]][[1]]
+# Sample completeness noes not appear to increase with diversity order for RSM,
+# But does for Citrus. This means there is some undetected diversity at the 
+# order level for Citrus.
+
+completeness_prof_inc_order[["figure"]][[2]]
+# The size-based rarefaction curves stabilize for RSM at all levels but not
+# for Citrus at q=0. This suggests that current data do not
+# contain sufficient info to estimate true species richness.
+
+completeness_prof_inc_order[["figure"]][[3]]
+completeness_prof_inc_order[["summary"]][[2]]
+# Comparing estimated asymptotic diversity (solid lines) with observed diversity (dashed lines)
+# We see that asymptotic values are not significantly difference from observed,
+# but there is large margine of error for Citurs. Asymptotic may actually be much higher.
+
+completeness_prof_inc_order[["figure"]][[4]]
+completeness_prof_inc_order[["summary"]][[3]]
+# Rarefaction curve stretches to 100% coverage for RSM but only 92.1% for Citrus.
+# Therefore we can only estimate diversity at 92.1% coverage.
+
+completeness_prof_inc_order[["figure"]][[5]]
+completeness_prof_inc_order[["summary"]][[4]]
+# Evenness profiles are significantly higher at RSM for q=0 and q=1, 
+# but not significantly different for q=2.
+
+
+
+#### Calculate Hill numbers using iNEXT (Hsieh 2016) ####
+
+# diversity values using minimum sample size (56)
+estimateD(diet.diver.inc.order, datatype = "incidence_raw", base = "size") 
+# diversity values using minimum coverage (92.1%)
+incidence_order_df <- estimateD(diet.diver.inc.order, datatype = "incidence_raw", base = "coverage")
+# We get different values when we use even sample sizes vs. even coverage.
+# Regardless, RSM and Citrus show similar diversity at the order level.
+
+```
+
+
+## Abundance-based
+
+```{r}
+
+# First create a list of 2 matrices to run in iNEXT
+#3 make a matrix from diet_citrus as type "numeric"
+diet_citrus_indiv_order <- metadata_orders_clean %>%
+  filter(source == "Citrus") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+  
+diet1_indiv_order <- as.matrix(apply(diet_citrus_indiv_order,2,as.numeric))
+# b) use your species names as row names
+row.names(diet1_indiv_order) <- rownames(diet_citrus_indiv_order)
+
+## make a matrix from diet_rsm as type "numeric"
+diet_rsm_indiv_order <- metadata_orders_clean %>%
+  filter(source == "RSM") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+  
+diet2_indiv_order <- as.matrix(apply(diet_rsm_indiv_order,2,as.numeric))
+# b) use your species names as row names
+row.names(diet2_indiv_order) <- rownames(diet_rsm_indiv_order)
+
+# Combine into one list (for abundance-based at individual level)
+diet.diver.indiv.order <- list(Citrus = diet1_indiv_order, RSM = diet2_indiv_order)
+
+
+#### RUN iNEXT ####
+
+indiv.3d.order <- iNEXTbeta3D(diet.diver.indiv.order, q = c(0, 1, 2), 
+                                      diversity = "TD",
+                                      datatype = "abundance",
+                                      nboot = 50, conf = 0.95)
+
+
+ggiNEXTbeta3D(indiv.3d.order, type = 'B')
+ggiNEXTbeta3D(indiv.3d.order, type = 'D')
+
+
+#### Sample Completeness Profile ####
+
+
+#### Standardize by completeness ####
+# Rarefaction curves go to 100% completeness, so I can estimate at that level.
+
+# Extract estimates of each diversity value
+order_diversity_siz_alpha <- as.data.frame(rbind(indiv.3d.order$Citrus$alpha, 
+                                   indiv.3d.order$RSM$alpha))
+order_diversity_cov_alpha <- as.data.frame(rbind(indiv.3d.order$Citrus$alpha, 
+                                   indiv.3d.order$RSM$alpha))
+order_diversity_siz_gamma <- as.data.frame(rbind(indiv.3d.order$Citrus$gamma, 
+                                   indiv.3d.order$RSM$gamma))
+order_diversity_cov_gamma <- as.data.frame(rbind(indiv.3d.order$Citrus$gamma, 
+                                   indiv.3d.order$RSM$gamma))
+order_diversity_siz_beta <- as.data.frame(rbind(indiv.3d.order$Citrus$beta, 
+                                   indiv.3d.order$RSM$beta))
+order_diversity_cov_beta <- as.data.frame(rbind(indiv.3d.order$Citrus$beta, 
+                                   indiv.3d.order$RSM$beta))
+
+# Extract estimates of dissimilarity values
+order_diversity_cov_sor <- as.data.frame(rbind(indiv.3d.order$Citrus$`1-C`, 
+                                   indiv.3d.order$RSM$`1-C`))
+order_diversity_cov_jac <- as.data.frame(rbind(indiv.3d.order$Citrus$`1-U`, 
+                                   indiv.3d.order$RSM$`1-U`))
+
+# Alpha values:
+alpha_order <- 
+rbind(
+order_diversity_cov_alpha %>%
+  filter(Dataset == "Citrus" & Order.q == 0 & SC == 1),
+order_diversity_cov_alpha %>%
+  filter(Dataset == "Citrus" & Order.q == 1 & SC == 1),
+order_diversity_cov_alpha %>%
+  filter(Dataset == "Citrus" & Order.q == 2 & SC == 1),
+order_diversity_cov_alpha %>%
+  filter(Dataset == "RSM" & Order.q == 0 & SC == 1),
+order_diversity_cov_alpha %>%
+  filter(Dataset == "RSM" & Order.q == 1 & SC == 1),
+order_diversity_cov_alpha %>%
+  filter(Dataset == "RSM" & Order.q == 2 & SC == 1)
+)
+names(alpha_order) <- c("Site", "q_level", "SC", "Size", "Diversity_a", 
+                      "Method_a", "s.e._a", "LCL_a", "UCL_a", "Type")
+alpha_order$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Beta values:
+beta_order <-
+rbind(
+order_diversity_cov_beta %>%
+  filter(Dataset == "Citrus" & Order.q == 0 & SC == 1),
+order_diversity_cov_beta %>%
+  filter(Dataset == "Citrus" & Order.q == 1 & SC == 1),
+order_diversity_cov_beta %>%
+  filter(Dataset == "Citrus" & Order.q == 2 & SC == 1),
+order_diversity_cov_beta %>%
+  filter(Dataset == "RSM" & Order.q == 0 & SC == 1),
+order_diversity_cov_beta %>%
+  filter(Dataset == "RSM" & Order.q == 1 & SC == 1),
+order_diversity_cov_beta %>%
+  filter(Dataset == "RSM" & Order.q == 2 & SC == 1)
+)
+names(beta_order) <- c("Site", "q_level", "SC", "Size", "Diversity_b", 
+                      "Method_b", "s.e._b", "LCL_b", "UCL_b", "Type")
+beta_order$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Gamma values:
+gamma_order <-
+rbind(
+order_diversity_cov_gamma %>%
+  filter(Dataset == "Citrus" & Order.q == 0 & SC == 1),
+order_diversity_cov_gamma %>%
+  filter(Dataset == "Citrus" & Order.q == 1 & SC == 1),
+order_diversity_cov_gamma %>%
+  filter(Dataset == "Citrus" & Order.q == 2 & SC == 1),
+order_diversity_cov_gamma %>%
+  filter(Dataset == "RSM" & Order.q == 0 & SC == 1),
+order_diversity_cov_gamma %>%
+  filter(Dataset == "RSM" & Order.q == 1 & SC == 1),
+order_diversity_cov_gamma %>%
+  filter(Dataset == "RSM" & Order.q == 2 & SC == 1)
+)
+names(gamma_order) <- c("Site", "q_level", "SC", "Size", "Diversity_g", 
+                      "Method_g", "s.e._g", "LCL_g", "UCL_g", "Type")
+gamma_order$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+abundance_order_df <- alpha_order %>%
+  full_join(beta_order) %>%
+  full_join(gamma_order) %>%
+  mutate(LCL_a = ifelse(LCL_a < 0, 0.0001, LCL_a))
+
+# Sorenson values
+sorenson_order <-
+rbind(
+order_diversity_cov_sor %>%
+  filter(Dataset == "Citrus" & Order.q == 0 & SC == 1),
+order_diversity_cov_sor %>%
+  filter(Dataset == "Citrus" & Order.q == 1 & SC == 1),
+order_diversity_cov_sor %>%
+  filter(Dataset == "Citrus" & Order.q == 2 & SC == 1),
+order_diversity_cov_sor %>%
+  filter(Dataset == "RSM" & Order.q == 0 & SC == 1),
+order_diversity_cov_sor %>%
+  filter(Dataset == "RSM" & Order.q == 1 & SC == 1),
+order_diversity_cov_sor %>%
+  filter(Dataset == "RSM" & Order.q == 2 & SC == 1)
+)
+names(sorenson_order) <- c("Site", "q_level", "SC", "Size", "Dissimilarity_s", 
+                      "Method_s", "s.e._s", "LCL_s", "UCL_s", "Type")
+sorenson_order$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+# Jaccard values
+jaccard_order <-
+rbind(
+order_diversity_cov_jac %>%
+  filter(Dataset == "Citrus" & Order.q == 0 & SC == 1),
+order_diversity_cov_jac %>%
+  filter(Dataset == "Citrus" & Order.q == 1 & SC == 1),
+order_diversity_cov_jac %>%
+  filter(Dataset == "Citrus" & Order.q == 2 & SC == 1),
+order_diversity_cov_jac %>%
+  filter(Dataset == "RSM" & Order.q == 0 & SC == 1),
+order_diversity_cov_jac %>%
+  filter(Dataset == "RSM" & Order.q == 1 & SC == 1),
+order_diversity_cov_jac %>%
+  filter(Dataset == "RSM" & Order.q == 2 & SC == 1)
+)
+names(jaccard_order) <- c("Site", "q_level", "SC", "Size", "Dissimilarity_j", 
+                      "Method_j", "s.e._j", "LCL_j", "UCL_j", "Type")
+jaccard_order$q_level <- rep(c("Richness", "Shannon", "Simpson"), 2)
+
+dissimiilarity_order_df <- full_join(sorenson_order, jaccard_order)
+
+
+```
+
+
+# Plot Diversity
+
+
+## Orders Combined
+
+```{r}
+
+# combine alpha, beta, and gamma diversities for abundance data
+plotdat_order_diversity <- data.frame(
+  Site = c(abundance_order_df$Site, abundance_order_df$Site, abundance_order_df$Site),
+  Precision = rep("Order", 18),
+  q = c(abundance_order_df$q_level, abundance_order_df$q_level, abundance_order_df$q_level),
+  Type = c(rep("Alpha", 6), rep("Beta", 6), rep("Gamma", 6)),
+  Diversity =  c(abundance_order_df$Diversity_a, abundance_order_df$Diversity_b,
+                 abundance_order_df$Diversity_g),
+  SE =  c(abundance_order_df$s.e._a, abundance_order_df$s.e._b,
+          abundance_order_df$s.e._g),
+  LCL = c(abundance_order_df$LCL_a, abundance_order_df$LCL_b,
+          abundance_order_df$LCL_g),
+  UCL = c(abundance_order_df$UCL_a, abundance_order_df$UCL_b,
+          abundance_order_df$UCL_g)
+)
+# change site names
+plotdat_order_diversity <- plotdat_order_diversity %>%
+  mutate(Site = ifelse(Site == "Citrus", "Citrus", "Santa María"))
+
+# Combine incidence and abundance diversity estimates into one df for gamma
+incidence_order_df
+abundance_order_df
+
+plotdat_order_gamma <- data.frame(
+  inc_abu = c(rep("Incidence", 6), rep("Abundance", 6)),
+  q_level = rep(c("Richness", "Shannon", "Simpson"), 4),
+  SC = c(incidence_order_df$SC, gamma_order$SC),
+  Diversity = c(incidence_order_df$qD, gamma_order$Diversity),
+  LCL = c(incidence_order_df$qD.LCL, gamma_order$LCL),
+  UCL = c(incidence_order_df$qD.UCL, gamma_order$UCL),
+  Site = c(incidence_order_df$Assemblage, gamma_order$Dataset)
+)
+# change site names
+plotdat_order_gamma <- plotdat_order_gamma %>%
+  mutate(Site = ifelse(Site == "Citrus", "Citrus", "Santa María"))
+
+
+# Alpha
+alpha.plot <- ggplotGrob(
+ggplot(data = plotdat_order_diversity[plotdat_order_diversity$Type == "Alpha",]) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+  scale_y_continuous(limits = c(0, 6)) +
+  labs(x = NULL, y = expression("D"[alpha])) +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 30, face = "bold", angle = 0, 
+                                    vjust = 0.5, family = "serif"),
+        legend.position = "none"))
+
+# Beta
+beta.plot <- ggplotGrob(
+ggplot(data = plotdat_order_diversity[plotdat_order_diversity$Type == "Beta",]) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+  scale_y_continuous(limits = c(0, 8)) +
+#  geom_line(aes(y = c(1.6,1.6,1.6,1.6,1.6,1.6), x = c(1.2,1.8,1.2,1.8,1.2,1.8))) +
+#  geom_line(aes(y = c(1.6, 1.7,1.6, 1.7,1.6, 1.7), x = c(1.2,1.2,1.2,1.2,1.2,1.2))) +
+#  geom_line(aes(y = c(1.6, 1.7,1.6, 1.7,1.6, 1.7), x = c(1.8,1.8,1.8,1.8,1.8,1.8))) +
+#  geom_text(aes(y = 0.8, x = 1.5), label = "*", size = 8) +
+  labs(x = NULL, y = expression("D"[beta])) +
+  facet_grid(~q) +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 15),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 30, face = "bold", angle = 0, 
+                                    vjust = 0.5, family = "serif"),
+        legend.position = "none"))
+
+# Gamma
+gamma.plot <- ggplotGrob(
+  ggplot(data = plotdat_order_gamma, aes(x = Site, y = Diversity,
+                                         color = Site, shape =  inc_abu,
+                                         linetype = inc_abu)) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+  scale_y_continuous(limits = c(0, 25)) +
+  labs(x = NULL, y = expression("D"[gamma])) +
+  scale_x_discrete(labels=function(x){sub("\\s", "\n", x)}) +
+  facet_grid(~q_level) +
+  guides(shape=guide_legend("inc_abu"), color = "none") + # remove site from legend
+  theme_classic() +
+  theme(axis.text = element_text(size = 15),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 30, face = "bold", angle = 0, 
+                                    vjust = 0.5, family = "serif"),
+        legend.position = c(0.9, 0.8),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 12)))
+
+
+#### Arrange Plots ####
+
+# assign all the same width
+p.orders <- rbind(alpha.plot, beta.plot, gamma.plot, size = "last")
+
+# write to pdf
+#pdf(file = "figures/Diversity_orders.pdf", height = 11, width = 8)
+
+grid.newpage()
+grid.draw(p.orders)
+
+#dev.off()
+
+# write to csv
+write.csv(plotdat_order_diversity, row.names = F, "../output/abundance_diversity.csv")
+```
+
+
+Just incidence for supplementary:
+
+```{r}
+
+(plot_gamma_order <- 
+  ggplot(data = plotdat_order_gamma, aes(x = Site, y = Diversity,
+                                         color = Site, shape =  inc_abu,
+                                         linetype = inc_abu)) +
+  geom_point(aes(y = Diversity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Diversity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#fdae61", "#5CA0D6")) +
+ # scale_y_continuous(limits = c(0, 15)) +
+  labs(x = NULL, y = "Gamma") +
+  facet_grid(~q_level) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 15),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.position = c(0.8, 0.8),
+        legend.title = element_blank()))
+
+# write to pdf
+#pdf(file = "figures/supp_gamma_orders.pdf", height = 8, width = 11)
+
+#plot_gamma_order
+
+#dev.off()
+
+write.csv(plotdat_order_gamma, row.names = F, "../output/gamma_diversity.csv")
+```
+
+
+
+
+# Diet Compostion: NMDS
+
+Goal of script: Run Adonis & NMDS on presence-absence data for all families identified
+General help: https://ourcodingclub.github.io/tutorials/ordination/
+following: https://chrischizinski.github.io/rstats/adonis/
+## Order NMDS: RRA
+```{r}
+
+# remove sample.id column
+all_orders <- metadata_orders_clean %>%
+  filter(source.year != "Eglin-1") %>%
+  select(-sample.id, -source, -dry.mass, -quality.ng.ul,
+         -sample.num, -clean, -collect.date, -source.year,
+         -collect.time, -x.decimal.deg, -y.decimal.deg) %>%
+  rowwise() %>%
+  mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads) %>% # convert to RRAs
+  select(-total_reads)
+
+# Plot NMDS using defaults
+order_nmds_rra <- metaMDS(all_orders, distance = "bray")
+plot(order_nmds_rra)
+order_nmds_rra$stress # 0.10
+
+
+
+#### Plot in ggplot ####
+
+# extract NMDS scores (x and y coordinates)
+data.scores.rra <- as.data.frame(scores(order_nmds_rra[["points"]]))
+
+# add metadata
+data.scores.rra$sample.id <- metadata_orders_clean$sample.id
+data.scores.rra$source.year <- metadata_orders_clean$source.year
+data.scores.rra$source <- metadata_orders_clean$source
+data.scores.rra$sex <- metadata_orders_clean$sex
+
+# change names for source year
+data.scores.rra$source.year <- ifelse(data.scores.rra$source.year == "Citrus-1",
+                                  "Citrus 2021", ifelse(
+                                   data.scores.rra$source.year == "Citrus-2",
+                                  "Citrus 2022", ifelse(
+                                  data.scores.rra$source.year == "RSM-1",
+                                  "Santa Maria 2021", "Santa Maria 2022"
+                                  )
+                                  ))
+
+# plot
+plot_order_nmds_rra = ggplot(data.scores.rra, aes(x = MDS1, y = MDS2)) + 
+  geom_jitter(size = 3, aes(color = source.year), width = 0.2, height = 0.2,
+              alpha = 0.7) + 
+  stat_ellipse(aes(colour=source.year),level = 0.95) +
+  labs(title = "a) Relative Read Abundance", x = "NMDS1", colour = "Source", 
+       y = "NMDS2", shape = "Source") +
+# annotate(geom = "text", x=2.2, y=-1.8, label="Stress = 0.10", fontface = "bold") +
+  xlim(c(-4, 4)) +
+  ylim(c(-4, 4)) +
+  scale_color_manual(values = c("#d7191c", "#fdae61", "#abd9e9", "#2c7bb6")) +
+  theme(axis.text.y = element_text(colour = "black", size = 12), 
+    axis.text.x = element_text(colour = "black", size = 12), 
+    legend.text = element_text(size = 12, face ="bold", colour ="black"), 
+    legend.position = "none", 
+    axis.title.y = element_text(face = "bold", size = 14), 
+    axis.title.x = element_text(face = "bold", size = 14, colour = "black"), 
+    legend.title = element_blank(), 
+    panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA,
+                                                                    linewidth = 1.2),
+    plot.title = element_text(hjust = 0.05, vjust = -10, size = 12, face = "bold"),
+    legend.key=element_blank()) 
+
+# NMDS Orders RRA
+plot_order_nmds_rra
+
+```
+
+## Order NMDS: FOO
+```{r}
+
+# remove sample.id column
+all_orders <- metadata_orders_clean %>%
+  filter(source.year != "Eglin-1") %>%
+  select(-sample.id, -source, -dry.mass, -quality.ng.ul,
+         -sample.num, -clean, -collect.date, -source.year,
+         -collect.time, -x.decimal.deg, -y.decimal.deg)
+
+# convert read # to presence/absence
+all_orders_presabs <- all_orders
+all_orders_presabs[all_orders_presabs>0] <- 1
+
+# Plot NMDS using defaults
+order_nmds_foo <- metaMDS(all_orders_presabs, distance = "bray")
+plot(order_nmds_foo)
+order_nmds_foo$stress # 0.087
+
+
+#### Plot in ggplot ####
+
+# extract NMDS scores (x and y coordinates)
+data.scores.foo <- as.data.frame(scores(order_nmds_foo[["points"]]))
+
+# add metadata
+data.scores.foo$sample.id <- metadata_orders_clean$sample.id
+data.scores.foo$source.year <- metadata_orders_clean$source.year
+data.scores.foo$source <- metadata_orders_clean$source
+data.scores.foo$sex <- metadata_orders_clean$sex
+
+# change names for source year
+data.scores.foo$source.year <- ifelse(data.scores.foo$source.year == "Citrus-1",
+                                  "Citrus 2021", ifelse(
+                                   data.scores.foo$source.year == "Citrus-2",
+                                  "Citrus 2022", ifelse(
+                                  data.scores.foo$source.year == "RSM-1",
+                                  "Santa Maria 2021", "Santa Maria 2022"
+                                  )
+                                  ))
+
+# plot
+plot_order_nmds_foo = ggplot(data.scores.foo, aes(x = MDS1, y = MDS2)) + 
+  geom_jitter(size = 3, aes(color = source.year), width = 0.2, height = 0.2,
+              alpha = 0.7) + 
+  stat_ellipse(aes(colour=source.year),level = 0.80) +
+   # stat_ellipse(aes(colour=source.year),level = 0.50, linetype = "dashed") +
+  labs(title = "b) Frequency of Occurrence", x = "NMDS1", colour = "Source", 
+       y = "NMDS2", shape = "Source") +
+#  annotate(geom = "text", x=2.2, y=-1.8, label="Stress = 0.09", fontface = "bold") +
+  xlim(c(-2, 2)) +
+  ylim(c(-2, 2)) +
+  scale_color_manual(values = c("#d7191c", "#fdae61", "#abd9e9", "#2c7bb6")) +
+  theme(axis.text.y = element_text(colour = "black", size = 12), 
+    axis.text.x = element_text(colour = "black", size = 12), 
+   # legend.text = element_text(size = 12, colour ="black"), 
+   # legend.position = c(0.2, 0.87), 
+    legend.position = "none",
+    axis.title.y = element_text(face = "bold", size = 14), 
+    axis.title.x = element_text(face = "bold", size = 14, colour = "black"), 
+    legend.title = element_blank(), 
+    panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA,
+                                                                    linewidth = 1.2),
+    plot.title = element_text(hjust = 0.05, vjust = -10, size = 12, face = "bold"),
+    legend.key=element_blank()) 
+        
+
+# NMDS Orders FOO
+plot_order_nmds_foo
+
+```
+
+
+## Combine
+
+```{r}
+#pdf("figures/NMDS_Order.pdf", width = 14, height = 6)
+
+grid.arrange(plot_order_nmds_rra, plot_order_nmds_foo, nrow = 1)
+
+#dev.off()
+```
+
+
+
+# Chao Similarity: within/between sites/years
+
+Now, compare Citrus-1, Citrus-2, RSM-1, and RSM-2 with iNEXT
+
+## Abundance-based
+```{r}
+
+# First create a list of 4 matrices to run in iNEXT
+#3 make a matrix from diet_citrus-1 as type "numeric"
+diet_citrus_1 <- metadata_orders_clean %>%
+  filter(source.year == "Citrus-1") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  dplyr::mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+  
+diet1 <- as.matrix(apply(diet_citrus_1,2,as.numeric))
+# b) use your species names as row names
+row.names(diet1) <- rownames(diet_citrus_1)
+
+
+#3 make a matrix from diet_citrus-2 as type "numeric"
+diet_citrus_2 <- metadata_orders_clean %>%
+  filter(source.year == "Citrus-2") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  dplyr::mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+  
+diet2 <- as.matrix(apply(diet_citrus_2,2,as.numeric))
+# b) use your species names as row names
+row.names(diet2) <- rownames(diet_citrus_2)
+
+#3 make a matrix from diet_rsm-1 as type "numeric"
+diet_rsm_1 <- metadata_orders_clean %>%
+  filter(source.year == "RSM-1") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  dplyr::mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+  
+diet3 <- as.matrix(apply(diet_rsm_1,2,as.numeric))
+# b) use your species names as row names
+row.names(diet2) <- rownames(diet_rsm_1)
+
+#3 make a matrix from diet_rsm-2 as type "numeric"
+diet_rsm_2 <- metadata_orders_clean %>%
+  filter(source.year == "RSM-2") %>%
+  select(21:31) %>%
+  rowwise() %>%
+  dplyr::mutate(total_reads = rowSums(across(everything()))) %>% # add column for row sum
+  mutate_at(vars(everything()), ~ . / total_reads * 1.001) %>% # calculate proportion per sample
+  filter(total_reads != 0) %>% # remove rows (orders) with 0 reads
+  select(-total_reads) %>% # remove row sums
+  t() # transpose
+  
+diet4 <- as.matrix(apply(diet_rsm_2,2,as.numeric))
+# b) use your species names as row names
+row.names(diet4) <- rownames(diet_rsm_2)
+
+
+# Combine into one list (for abundance-based at individual level)
+diet.diver.year <- list("Citrus-1" = diet1, "Citrus-2" = diet2,
+                        "RSM-1" = diet3, "RSM-2" = diet4)
+
+
+#### RUN iNEXT ####
+
+indiv.3d.year <- iNEXTbeta3D(diet.diver.year, q = c(0, 1, 2), 
+                                      diversity = "TD",
+                                      datatype = "abundance",
+                                      nboot = 50, conf = 0.95)
+
+
+ggiNEXTbeta3D(indiv.3d.year, type = 'B')
+ggiNEXTbeta3D(indiv.3d.year, type = 'D')
+
+
+#### Standardize by completeness ####
+# Rarefaction curves go to 100% completeness, so I can estimate at that level.
+
+# Extract estimates of dissimilarity values
+dissimilarity_sor <- as.data.frame(rbind(indiv.3d.year$`Citrus-1`$`1-C`, 
+                                   indiv.3d.year$`Citrus-2`$`1-C`, 
+                                   indiv.3d.year$`RSM-1`$`1-C`, 
+                                   indiv.3d.year$`RSM-2`$`1-C`))
+dissimilarity_jac <- as.data.frame(rbind(indiv.3d.year$`Citrus-1`$`1-U`, 
+                                   indiv.3d.year$`Citrus-2`$`1-U`, 
+                                   indiv.3d.year$`RSM-1`$`1-U`, 
+                                   indiv.3d.year$`RSM-2`$`1-U`))
+dissimilarity_jac <- as.data.frame(rbind(indiv.3d.year$`Citrus-1`$`1-U`, 
+                                   indiv.3d.year$`Citrus-2`$`1-U`, 
+                                   indiv.3d.year$`RSM-1`$`1-U`, 
+                                   indiv.3d.year$`RSM-2`$`1-U`))
+# Combine into one df
+
+# Sorenson values for richness only
+sorenson_order <-
+rbind(
+dissimilarity_sor %>%
+  filter(Dataset == "Citrus-1" & Order.q == 0 & SC == 1),
+dissimilarity_sor %>%
+  filter(Dataset == "RSM-1" & Order.q == 0 & SC == 1),
+dissimilarity_sor %>%
+  filter(Dataset == "Citrus-2" & Order.q == 0 & SC == 1),
+dissimilarity_sor %>%
+  filter(Dataset == "RSM-2" & Order.q == 0 & SC == 1)
+)
+names(sorenson_order) <- c("Site", "q_level", "SC", "Size", "Dissimilarity_s", 
+                      "Method_s", "s.e._s", "LCL_s", "UCL_s", "Type")
+
+# Jaccard values
+jaccard_order <-
+rbind(
+dissimilarity_jac %>%
+  filter(Dataset == "Citrus-1" & Order.q == 0 & SC == 1),
+dissimilarity_jac %>%
+  filter(Dataset == "RSM-1" & Order.q == 0 & SC == 1),
+dissimilarity_jac %>%
+  filter(Dataset == "Citrus-2" & Order.q == 0 & SC == 1),
+dissimilarity_jac %>%
+  filter(Dataset == "RSM-2" & Order.q == 0 & SC == 1)
+)
+names(jaccard_order) <- c("Site", "q_level", "SC", "Size", "Dissimilarity_j", 
+                      "Method_j", "s.e._j", "LCL_j", "UCL_j", "Type")
+
+dissimilarity_abu_df <- full_join(sorenson_order, jaccard_order)
+
+```
+
+## Incidence-based
+```{r}
+
+# Convert abundances to presence/absences
+diet1.inc <- ifelse(diet1 > 0, 1, 0)
+diet2.inc <- ifelse(diet2 > 0, 1, 0)
+diet3.inc <- ifelse(diet3 > 0, 1, 0)
+diet4.inc <- ifelse(diet4 > 0, 1, 0)
+
+# Combine into one list (for abundance-based at individual level)
+diet.diver.year.inc <- list("Citrus-1" = diet1.inc, "Citrus-2" = diet2.inc,
+                        "RSM-1" = diet3.inc, "RSM-2" = diet4.inc)
+
+
+#### RUN iNEXT ####
+
+#### Assessment of sample completeness profile ####
+indiv.3d.year.inc <- iNEXT4steps(diet.diver.year.inc, 
+                                      q = seq(0, 2, 0.2), 
+                                      datatype = "incidence_raw",
+                                      nboot = 50, conf = 0.95)
+
+
+
+#### Standardize by completeness ####
+indiv.3d.year.inc$summary$`STEP 1. Sample completeness profiles`
+indiv.3d.year.inc$figure[[4]]
+# Maximum sample completeness is 0.92 for richness
+
+
+#### Calculate Hill numbers using iNEXT (Hsieh 2016) ####
+
+# diversity values using minimum coverage (92.1%)
+dissimilarity_inc_df <- estimateD(diet.diver.year.inc, 
+                                    datatype = "incidence_raw", 
+                                    base = "coverage")
+
+```
+
+## Plot
+
+Plot Dissimilarity
+```{r}
+
+# combine dissimilarities for abundance data
+plotdat_order_dissimilarity <- data.frame(
+  Site = c(dissimilarity_abu_df$Site, dissimilarity_abu_df$Site),
+  Precision = rep("Order", 8),
+  q = c(dissimilarity_abu_df$q_level, dissimilarity_abu_df$q_level),
+  Type = c(rep("Sorensen", 4), rep("Jaccard", 4)),
+  Dissimilarity =  c(dissimilarity_abu_df$Dissimilarity_s, 
+                 dissimilarity_abu_df$Dissimilarity_j),
+  SE =  c(dissimilarity_abu_df$s.e._s, dissimilarity_abu_df$s.e._j),
+  LCL = c(dissimilarity_abu_df$LCL_s, dissimilarity_abu_df$LCL_j),
+  UCL = c(dissimilarity_abu_df$UCL_s, dissimilarity_abu_df$UCL_j)
+)
+plotdat_order_dissimilarity$Site <- rep(c("Citrus 2021", "Santa María 2021",
+                                      "Citrus 2022", "Santa María 2022"), 2)
+
+plotdat_order_dissimilarity$LCL <- ifelse(plotdat_order_dissimilarity$LCL < 0,
+                                          0, plotdat_order_dissimilarity$LCL)
+
+
+# Sorensen
+sorenson.plot <- ggplotGrob(
+ggplot(data = plotdat_order_dissimilarity[plotdat_order_dissimilarity$Type == "Sorensen",]) +
+  geom_point(aes(y = Dissimilarity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Dissimilarity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#d7191c", "#fdae61", "#abd9e9", "#2c7bb6")) +
+  scale_y_continuous(limits = c(0, 0.5)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 11)) +
+  labs(x = NULL, y = NULL, title = "c) Sørensen Index") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.text.x = element_text(size = 12),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        plot.title = element_text(hjust = 0.05, vjust = -10, size = 12, face = "bold"),
+        legend.position = "none",
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA,linewidth = 1.2)))
+
+# Jaccard
+jaccard.plot <- ggplotGrob(
+ggplot(data = plotdat_order_dissimilarity[plotdat_order_dissimilarity$Type == "Jaccard",]) +
+  geom_point(aes(y = Dissimilarity, x = Site, color = Site),
+             position = position_dodge(width = 0.5), size = 4) +
+  geom_errorbar(aes(y = Dissimilarity, x = Site, color = Site,
+                    ymin = LCL, ymax = UCL),
+                position = position_dodge(width = 0.5),
+                width = 0.4, linewidth = 1) +
+  scale_color_manual(values = c("#d7191c", "#fdae61", "#abd9e9", "#2c7bb6")) +
+  scale_y_continuous(limits = c(0, 2)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 11)) +
+  labs(x = NULL,  y = NULL, title = "d) Jaccard Index") +
+  theme_classic() +
+  theme(axis.text.y = element_text(size = 12),
+        axis.text.x = element_text(size = 12),
+        strip.text = element_text(size=15, face = "bold"),
+        axis.title.y = element_text(size = 14, face = "bold"),
+        plot.title = element_text(hjust = 0.05, vjust = -10, size = 12, face = "bold"),
+        legend.position = "none",
+        panel.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA,linewidth = 1.2)))
+
+#### Arrange Plots ####
+
+# assign all the same width
+p.dissim <- rbind(sorenson.plot, jaccard.plot, size = "last")
+
+# write to pdf
+#pdf(file = "figures/Dissimilarity.pdf", height = 8, width = 5)
+
+grid.newpage()
+grid.draw(p.dissim)
+
+#dev.off()
+
+# write to csv
+write.csv(plotdat_order_dissimilarity, row.names = F, "../output/abundance_dissimilarity.csv")
+```
+
+## Add to NMDS plot
+
+```{r}
+
+plot_nmds_rra <- ggplotGrob(plot_order_nmds_rra)
+plot_nmds_foo <- ggplotGrob(plot_order_nmds_foo)
+
+p.site.year.nmds <- cbind(plot_nmds_rra, plot_nmds_foo)
+p.site.year.dissim <- cbind(sorenson.plot, jaccard.plot)
+p.site.year <- rbind(p.site.year.nmds, p.site.year.dissim)
+
+grid.newpage()
+grid.draw(p.site.year)
+
+# write to pdf
+#pdf(file = "figures/Dissimilarity_nmds.pdf", height = 8, width = 11)
+
+grid.newpage()
+grid.draw(p.site.year)
+
+#dev.off()
+
+```
+
+
