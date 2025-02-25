@@ -5,15 +5,9 @@
 
 We examined the diets and prey communities of *C. minor* during two breeding seasons in Florida, USA, and two nonbreeding seasons in Corrientes Province, Argentina (2020–2022). We used DNA metabarcoding to identify insect prey in *C. minor* fecal samples, and we employed malaise and UV light traps to assess the abundance and composition of aerial insect prey communities. Demultiplexed sequences from fecal metabarcoding were processed in Qiime2, and analysis of diet diversity, prey selection, and insect community diversity was conducted in R using the scripts and data files contained in this directory.
 
-### Files and variables
-
-#### File: prey-selection-data.zip
-
-**Description:** Directory for all analysis.
+### **Contents**
 
 All raw data can be found in the data/ folder, saved model outputs in models/, and output tables in output/.
-
-### **Contents**
 
 #### data/
 
